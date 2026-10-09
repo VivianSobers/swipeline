@@ -61,6 +61,7 @@ func TestRenderedComposeBudgetsAndScope(t *testing.T) {
 		"prometheus": {"prom/prometheus:v3.15.0", 256, true},
 		"postgres":   {"postgres:17.11-bookworm", 512, false},
 		"kafka":      {"apache/kafka:4.3.1", 768, false},
+		"gateway":    {"swipeline-gateway:m2", 256, true},
 	}
 	if len(services) != len(expected) {
 		t.Fatalf("unexpected services: %v", services)

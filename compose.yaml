@@ -8,6 +8,7 @@ services:
     mem_limit: 256m
     environment:
       GOMEMLIMIT: 192MiB
+      SWIPELINE_GATEWAY_URL: http://gateway:8081
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -126,6 +127,38 @@ services:
       timeout: 3s
       retries: 30
       start_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+  gateway:
+    profiles: [core, full]
+    image: swipeline-gateway:m2
+    build:
+      context: .
+      dockerfile: deploy/gateway.Dockerfile
+    mem_limit: 256m
+    environment:
+      DATABASE_URL: postgres://gateway:gateway-local@postgres:5432/gateway?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      GOMEMLIMIT: 192MiB
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports:
+      - "127.0.0.1:${SWIPELINE_GATEWAY_PORT:-8081}:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, /gateway, health]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: on-failure
     logging:
       driver: json-file
       options:
