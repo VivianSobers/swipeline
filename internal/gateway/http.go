@@ -78,5 +78,20 @@ func (s *Service) Handler() http.Handler {
 		}
 		reply(w, http.StatusOK, run)
 	})
+	m.HandleFunc("GET /v1/authorizations/{id}", func(w http.ResponseWriter, r *http.Request) {
+		row, err := s.DB.Lookup(r.Context(), r.PathValue("id"))
+		if errors.Is(err, sql.ErrNoRows) {
+			failure(w, http.StatusNotFound, "UNKNOWN_ID")
+			return
+		} else if err != nil {
+			failure(w, http.StatusServiceUnavailable, "RETRY_SAME_ID")
+			return
+		}
+		if row.Final == nil {
+			reply(w, http.StatusAccepted, row.Request)
+			return
+		}
+		reply(w, http.StatusOK, row.Final)
+	})
 	return m
 }

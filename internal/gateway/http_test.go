@@ -101,3 +101,29 @@ func TestRunManifestHTTP(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 }
+
+func TestStatusHTTP(t *testing.T) {
+	s, r, e := service(t)
+	ctx := context.Background()
+	path := "/v1/authorizations/" + e.TransactionID
+	if w := invoke(s, http.MethodGet, path, nil, ""); w.Code != http.StatusNotFound {
+		t.Fatal("unknown", w.Code)
+	}
+	if err := s.DB.Register(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Admit(ctx, []store.Input{{Event: e, Received: time.Now().Add(-time.Second).UnixMilli()}}); err != nil {
+		t.Fatal(err)
+	}
+	var pending auth.Request
+	if w := invoke(s, http.MethodGet, path, nil, ""); w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &pending) != nil || pending.Event != e {
+		t.Fatal("pending", w.Code, w.Body.String())
+	}
+	if _, err := s.DB.Finalize(ctx, []store.Choice{{ID: e.TransactionID}}); err != nil {
+		t.Fatal(err)
+	}
+	var final auth.Final
+	if w := invoke(s, http.MethodGet, path, nil, ""); w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &final) != nil || final.Source != "STAND_IN" {
+		t.Fatal("final", w.Code, w.Body.String())
+	}
+}
