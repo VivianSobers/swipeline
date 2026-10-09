@@ -57,4 +57,12 @@ private ObjectNode request(long at,long amount) throws Exception {
  assertEquals(100,Card.apply(s,request(610000,10000)).path("usual_minor").asLong());
  assertFalse(Card.apply(s,request(671000,10000)).path("spend_anomaly").asBoolean());
 }
+@Test public void hllFixedSeedTolerance() throws Exception {
+ for(int count:new int[]{80,500,2000,10000}) {
+  byte[] h=new byte[4096];for(int i=0;i<count;i++)Hll.add(h,"card_"+i);
+  assertEquals(count,Hll.estimate(h),count*0.06);
+  byte[] before=h.clone();for(int i=0;i<count;i++)Hll.add(h,"card_"+i);
+  assertArrayEquals(before,h);
+ }
+}
 }
