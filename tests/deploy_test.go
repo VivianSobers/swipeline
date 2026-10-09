@@ -13,6 +13,7 @@ type service struct {
 	Profiles    []string `json:"profiles"`
 	Privileged  bool     `json:"privileged"`
 	Configs     []any    `json:"configs"`
+	Tmpfs       []string `json:"tmpfs"`
 	Healthcheck struct {
 		Test []string `json:"test"`
 	} `json:"healthcheck"`
@@ -129,4 +130,15 @@ func TestRenderedKafkaMountsTopicBootstrap(t *testing.T) {
 		}
 	}
 	t.Fatal("topic bootstrap is not mounted")
+}
+
+// The broker loads compression codecs (snappy, zstd) as native libraries it
+// extracts to /tmp; Docker mounts tmpfs noexec unless told otherwise.
+func TestRenderedKafkaTmpAllowsNativeCodecs(t *testing.T) {
+	for _, mount := range rendered(t)["kafka"].Tmpfs {
+		if strings.HasPrefix(mount, "/tmp:") && strings.Contains(mount, ",exec") {
+			return
+		}
+	}
+	t.Fatal("kafka /tmp must allow exec for native codecs")
 }

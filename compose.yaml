@@ -113,7 +113,7 @@ services:
         bind:
           selinux: z
     tmpfs:
-      - /tmp:size=64m,mode=1777
+      - /tmp:size=64m,mode=1777,exec
     healthcheck:
       test: [CMD-SHELL, "KAFKA_HEAP_OPTS=-Xmx64m /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list >/dev/null"]
       interval: 5s
