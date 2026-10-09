@@ -128,9 +128,11 @@ type Input struct {
 }
 
 // Row is a stored authorization and its final outcome, nil while pending.
+// Fresh is set only on the Finalize result that committed the final.
 type Row struct {
 	Request auth.Request `json:"request"`
 	Final   *auth.Final  `json:"final"`
+	Fresh   bool         `json:"fresh"`
 }
 
 // Lookup returns the stored authorization for a transaction ID.

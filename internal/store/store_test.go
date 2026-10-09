@@ -222,8 +222,8 @@ func TestLateProposalCannotWin(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 	again := finalize(t, s, Choice{ID: e.TransactionID, Proposal: approval(r)})
-	a, _ := json.Marshal(got)
-	b, _ := json.Marshal(again)
+	a, _ := json.Marshal(got.Final)
+	b, _ := json.Marshal(again.Final)
 	if string(a) != string(b) {
 		t.Fatal("final changed")
 	}
@@ -339,5 +339,22 @@ func TestPendingRecovery(t *testing.T) {
 	}
 	if row, err := s.Lookup(ctx, waiting.TransactionID); err != nil || row.Final != nil {
 		t.Fatal("unexpired admission finalized", err)
+	}
+}
+
+func TestOnlyTheCommittingCallIsFresh(t *testing.T) {
+	s := database(t)
+	_, e := fixture(t, s)
+	admitAt(t, s, e, time.Now().Add(-time.Second))
+	if first := finalize(t, s, Choice{ID: e.TransactionID}); !first.Fresh {
+		t.Fatal("committing call not fresh")
+	}
+	if again := finalize(t, s, Choice{ID: e.TransactionID}); again.Fresh || again.Final == nil {
+		t.Fatal("repeat reported fresh")
+	}
+	waiting := sibling(t, e, "waiting")
+	admitAt(t, s, waiting, time.Now().Add(time.Minute))
+	if early := finalize(t, s, Choice{ID: waiting.TransactionID}); early.Fresh {
+		t.Fatal("no-op reported fresh")
 	}
 }
