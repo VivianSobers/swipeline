@@ -9,10 +9,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -85,8 +87,38 @@ func run(ctx context.Context, args []string, out, errs io.Writer) error {
 		if err != nil {
 			return err
 		}
+		requests, cancelRequests := context.WithCancel(ctx)
+		var handlers sync.WaitGroup
+		var admission sync.Mutex
+		stopping := false
+		handler := service.Handler()
 		// No write timeout: a replay request legitimately runs for minutes.
-		server := &http.Server{Addr: *listen, Handler: service.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384}
+		server := &http.Server{
+			Addr:        *listen,
+			BaseContext: func(net.Listener) context.Context { return requests },
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				admission.Lock()
+				if stopping {
+					admission.Unlock()
+					http.Error(w, "service shutting down", http.StatusServiceUnavailable)
+					return
+				}
+				handlers.Add(1)
+				admission.Unlock()
+				defer handlers.Done()
+				handler.ServeHTTP(w, r)
+			}),
+			ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384,
+		}
+		defer func() {
+			// Prevent new work before waiting, including after a forced close.
+			admission.Lock()
+			stopping = true
+			admission.Unlock()
+			cancelRequests()
+			_ = server.Close()
+			handlers.Wait()
+		}()
 		done := make(chan error, 1)
 		go func() { done <- server.ListenAndServe() }()
 		select {
@@ -99,7 +131,6 @@ func run(ctx context.Context, args []string, out, errs io.Writer) error {
 			shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := server.Shutdown(shutdown); err != nil {
-				_ = server.Close()
 				return err
 			}
 			return nil
