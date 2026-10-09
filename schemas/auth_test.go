@@ -128,3 +128,24 @@ func TestAuthRequestSchema(t *testing.T) {
 		"missing envelope id":   func(m map[string]any) { delete(m, "event_id") },
 	})
 }
+
+func proposal(t *testing.T) auth.Proposal {
+	return auth.Proposal{Request: request(t), ProposalID: "p1", Decision: "DECLINE", Reason: "CARD_TESTING",
+		Flags: []string{"CARD_TESTING", "CARD_VELOCITY"}, Score: 140, Velocity: 7, Usual: 2500, Ratio: 0.04, Distinct: 61.5, Scored: 1020}
+}
+
+func TestAuthProposalSchema(t *testing.T) {
+	wire(t, "auth-proposal.schema.json", reflect.TypeOf(auth.Proposal{}))
+	check(t, compile(t, "urn:swipeline:auth-proposal:v1"), proposal(t), map[string]func(map[string]any){
+		"missing proposal id": func(m map[string]any) { delete(m, "proposal_id") },
+		"null score":          func(m map[string]any) { m["score"] = nil },
+		"score over max":      func(m map[string]any) { m["score"] = 181 },
+		"unknown decision":    func(m map[string]any) { m["decision"] = "REVIEW" },
+		"unknown flag":        func(m map[string]any) { m["fraud_flags"] = []any{"GEO"} },
+		"repeated flag":       func(m map[string]any) { m["fraud_flags"] = []any{"CARD_TESTING", "CARD_TESTING"} },
+		"usual below floor":   func(m map[string]any) { m["usual_minor"] = 99 },
+		"negative ratio":      func(m map[string]any) { m["spend_ratio"] = -0.1 },
+		"string late":         func(m map[string]any) { m["features_late"] = "false" },
+		"missing request":     func(m map[string]any) { delete(m, "received_at_ms") },
+	})
+}
