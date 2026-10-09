@@ -3,6 +3,7 @@ package replay
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,30 @@ import (
 
 func config() Config {
 	return Config{generator.Config{RunID: "run", Seed: 42, Day: "2026-10-08", Events: 200}, 100000, 8, 16}
+}
+
+func TestConfigMinimumTPS(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		tps     float64
+		wantErr bool
+	}{
+		{"minimum", 0.001, false},
+		{"below_minimum", 0.000999, true},
+		{"tiny_positive", 1e-12, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config()
+			cfg.TPS = tc.tps
+			err := cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Config.Validate() with TPS %g error = %v, wantErr %t", tc.tps, err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "finite TPS in [0.001,100000]") {
+				t.Fatalf("error does not explain TPS range: %v", err)
+			}
+		})
+	}
 }
 
 func TestOrderAndBoundedSlowSink(t *testing.T) {

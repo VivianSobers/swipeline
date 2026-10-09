@@ -24,8 +24,8 @@ func (c Config) Validate() error {
 	if err := c.Generator.Validate(); err != nil {
 		return err
 	}
-	if c.Workers < 1 || c.Workers > 64 || c.Queue < 1 || c.Queue > 4096 || c.Workers > c.Queue || math.IsNaN(c.TPS) || math.IsInf(c.TPS, 0) || c.TPS <= 0 || c.TPS > 100000 {
-		return errors.New("require finite TPS in (0,100000], 1..64 workers and workers..4096 queue")
+	if c.Workers < 1 || c.Workers > 64 || c.Queue < 1 || c.Queue > 4096 || c.Workers > c.Queue || math.IsNaN(c.TPS) || math.IsInf(c.TPS, 0) || c.TPS < 0.001 || c.TPS > 100000 {
+		return errors.New("require finite TPS in [0.001,100000], 1..64 workers and workers..4096 queue")
 	}
 	return nil
 }
