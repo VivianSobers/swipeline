@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:swipeline:common:v1",
+  "type": "object",
+  "required": ["schema_version", "event_id", "run_id", "transaction_id", "source_seq", "event_time_ms", "produced_at_ms", "payload_hash"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "event_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+    "transaction_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_seq": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "event_time_ms": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "produced_at_ms": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "payload_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:swipeline:preview:v1",
+  "allOf": [{"$ref": "common.schema.json"}],
+  "type": "object",
+  "required": ["card_token", "merchant_id", "mcc", "issuer_bank_id", "acquirer_bank_id", "currency", "amount_minor", "authorization_date", "rule_version", "reference_version"],
+  "properties": {
+    "card_token": {"type": "string", "pattern": "^card_[0-9a-f]{64}$"},
+    "merchant_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+    "mcc": {"type": "string", "pattern": "^[0-9]{4}$"},
+    "issuer_bank_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+    "acquirer_bank_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+    "currency": {"type": "string", "const": "USD"},
+    "amount_minor": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807},
+    "authorization_date": {"type": "string", "format": "date"},
+    "rule_version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+    "reference_version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"}
+  },
+  "additionalProperties": true
+}
