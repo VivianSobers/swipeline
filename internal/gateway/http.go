@@ -121,6 +121,13 @@ func body(w http.ResponseWriter, r *http.Request, v any) error {
 // Handler routes the gateway API.
 func (s *Service) Handler() http.Handler {
 	m := http.NewServeMux()
+	m.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		if !s.ConsumerReady.Load() || s.DB.DB.PingContext(r.Context()) != nil {
+			reply(w, http.StatusServiceUnavailable, map[string]string{"status": "recovering"})
+			return
+		}
+		reply(w, http.StatusOK, map[string]string{"status": "ready"})
+	})
 	m.HandleFunc("POST /v1/runs", func(w http.ResponseWriter, r *http.Request) {
 		var run auth.Run
 		if body(w, r, &run) != nil || run.Validate() != nil {

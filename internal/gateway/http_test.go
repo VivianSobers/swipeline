@@ -220,3 +220,18 @@ func TestAuthorizationRejectsBadRequests(t *testing.T) {
 		t.Fatal("rejected request was admitted")
 	}
 }
+
+func TestReadinessRequiresProposalConsumer(t *testing.T) {
+	s, _, _ := service(t)
+	if invoke(s, http.MethodGet, "/readyz", nil, "").Code != http.StatusServiceUnavailable {
+		t.Fatal("uninitialized consumer ready")
+	}
+	s.ConsumerReady.Store(true)
+	if invoke(s, http.MethodGet, "/readyz", nil, "").Code != http.StatusOK {
+		t.Fatal("ready dependencies unavailable")
+	}
+	_ = s.DB.DB.Close()
+	if invoke(s, http.MethodGet, "/readyz", nil, "").Code != http.StatusServiceUnavailable {
+		t.Fatal("ready without a database")
+	}
+}
