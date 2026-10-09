@@ -12,7 +12,7 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${SWIPELINE_HTTP_PORT:-8080}:8080"
     volumes:
       - preview-data:/data
     tmpfs:
@@ -40,7 +40,7 @@ services:
       - --storage.tsdb.retention.time=24h
       - --storage.tsdb.retention.size=256MB
     ports:
-      - "127.0.0.1:9090:9090"
+      - "127.0.0.1:${SWIPELINE_PROM_PORT:-9090}:9090"
     configs:
       - source: prometheus-config
         target: /etc/prometheus/prometheus.yml
