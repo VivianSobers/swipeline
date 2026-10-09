@@ -106,6 +106,12 @@ services:
         read_only: true
         bind:
           selinux: z
+      - type: bind
+        source: ./deploy/topics.sh
+        target: /opt/swipeline/topics.sh
+        read_only: true
+        bind:
+          selinux: z
     tmpfs:
       - /tmp:size=64m,mode=1777
     healthcheck:

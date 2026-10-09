@@ -121,3 +121,12 @@ func TestRenderedKafkaHealthcheckHasOwnHeap(t *testing.T) {
 		t.Fatalf("healthcheck: %q", test)
 	}
 }
+
+func TestRenderedKafkaMountsTopicBootstrap(t *testing.T) {
+	for _, v := range rendered(t)["kafka"].Volumes {
+		if v.Target == "/opt/swipeline/topics.sh" && strings.HasSuffix(v.Source, "/deploy/topics.sh") {
+			return
+		}
+	}
+	t.Fatal("topic bootstrap is not mounted")
+}

@@ -66,3 +66,26 @@ func TestKafkaBrokerConfig(t *testing.T) {
 		}
 	}
 }
+
+// Six application topics, fixed from first install: 24-hour retention, and
+// 72 hours for dead letters.
+func TestTopicTopology(t *testing.T) {
+	got := map[string]string{}
+	for _, line := range lines(t, "../deploy/topics.sh") {
+		if f := strings.Fields(line); len(f) == 3 && f[0] == "topic" {
+			got[f[1]] = f[2]
+		}
+	}
+	want := map[string]string{
+		"auth.requests": "86400000", "auth.proposals": "86400000", "decisions.raw": "86400000",
+		"decisions": "86400000", "lifecycle": "86400000", "dlq": "259200000",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("topics: %v", got)
+	}
+	for name, retention := range want {
+		if got[name] != retention {
+			t.Errorf("%s retention %q, want %s", name, got[name], retention)
+		}
+	}
+}
