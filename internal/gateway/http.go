@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -65,6 +66,17 @@ func (s *Service) Handler() http.Handler {
 			return
 		}
 		reply(w, http.StatusCreated, run)
+	})
+	m.HandleFunc("GET /v1/runs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		run, err := s.DB.Manifest(r.Context(), r.PathValue("id"))
+		if errors.Is(err, sql.ErrNoRows) {
+			failure(w, http.StatusNotFound, "UNKNOWN_RUN")
+			return
+		} else if err != nil {
+			failure(w, http.StatusServiceUnavailable, "RETRY")
+			return
+		}
+		reply(w, http.StatusOK, run)
 	})
 	return m
 }

@@ -86,3 +86,18 @@ func TestRegisterHTTP(t *testing.T) {
 		t.Fatal("trailing data", w.Code)
 	}
 }
+
+func TestRunManifestHTTP(t *testing.T) {
+	s, r, _ := service(t)
+	if w := invoke(s, http.MethodGet, "/v1/runs/"+r.ID, nil, ""); w.Code != http.StatusNotFound {
+		t.Fatal("unknown run", w.Code)
+	}
+	if err := s.DB.Register(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	w := invoke(s, http.MethodGet, "/v1/runs/"+r.ID, nil, "")
+	var got auth.Run
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &got) != nil || got != r {
+		t.Fatal(w.Code, w.Body.String())
+	}
+}

@@ -84,6 +84,16 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return tx.Commit()
 }
 
+// Manifest returns a registered run; sql.ErrNoRows if there is none.
+func (s *Store) Manifest(ctx context.Context, id string) (auth.Run, error) {
+	var r auth.Run
+	var data []byte
+	if err := s.DB.QueryRowContext(ctx, "SELECT config_json FROM runs WHERE run_id=$1", id).Scan(&data); err != nil {
+		return r, err
+	}
+	return r, json.Unmarshal(data, &r)
+}
+
 // ErrRunConflict means a run ID was reused with a different manifest.
 var ErrRunConflict = errors.New("run conflict")
 
