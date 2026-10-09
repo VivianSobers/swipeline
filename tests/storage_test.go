@@ -105,3 +105,52 @@ func TestPrometheusScrapesGateway(t *testing.T) {
 		t.Fatalf("scrape jobs: %v", jobs)
 	}
 }
+
+// flatten reads the nested-map YAML subset used by deploy/flink-config.yaml
+// into dotted keys.
+func flatten(t *testing.T, path string) map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	var stack []string
+	for _, raw := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(raw) == "" || strings.HasPrefix(strings.TrimSpace(raw), "#") {
+			continue
+		}
+		depth := (len(raw) - len(strings.TrimLeft(raw, " "))) / 2
+		key, value, _ := strings.Cut(strings.TrimSpace(raw), ":")
+		stack = append(stack[:depth], key)
+		if value = strings.TrimSpace(value); value != "" {
+			out[strings.Join(stack, ".")] = value
+		}
+	}
+	return out
+}
+
+// Flink runs with zero network buffering (each record is sent at once, so a
+// sparse request is not held for a batch) and leaves headroom under each
+// container limit for memory the JVM does not account for exactly.
+func TestFlinkProcessConfig(t *testing.T) {
+	got := flatten(t, "../deploy/flink-config.yaml")
+	for key, want := range map[string]string{
+		"execution.buffer-timeout.enabled":     "true",
+		"execution.buffer-timeout.interval":    "0 ms",
+		"execution.checkpointing.interval":     "2 s",
+		"jobmanager.memory.process.size":       "448m",
+		"jobmanager.memory.jvm-metaspace.size": "128m",
+		"jobmanager.memory.jvm-overhead.min":   "64m",
+		"taskmanager.memory.process.size":      "1408m",
+		"taskmanager.numberOfTaskSlots":        "3",
+		"state.backend.type":                   "rocksdb",
+		"state.backend.incremental":            "true",
+		"state.checkpoints.dir":                "file:///state/checkpoints",
+		"pipeline.max-parallelism":             "128",
+	} {
+		if got[key] != want {
+			t.Errorf("%s=%q, want %q", key, got[key], want)
+		}
+	}
+}

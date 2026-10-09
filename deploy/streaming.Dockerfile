@@ -12,4 +12,8 @@ ENV JAVA_HOME=/opt/java/openjdk
 COPY --from=verify /src/target/authorization.jar /opt/flink/usrlib/authorization.jar
 USER root
 RUN mkdir -p /state/checkpoints /state/savepoints && chown -R flink:flink /state
+COPY --chown=flink:flink deploy/flink-config.yaml /opt/flink/conf/config.yaml
+# The official entrypoint otherwise advertises the container ID, which other
+# containers cannot resolve.
+ENV JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
 USER flink

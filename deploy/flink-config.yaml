@@ -1,0 +1,43 @@
+# Process sizes leave headroom under the Compose memory limits (512m, 1536m).
+jobmanager:
+  rpc:
+    address: flink-jobmanager
+  memory:
+    process:
+      size: 448m
+    jvm-metaspace:
+      size: 128m
+    jvm-overhead:
+      min: 64m
+taskmanager:
+  numberOfTaskSlots: 3
+  memory:
+    process:
+      size: 1408m
+    managed:
+      fraction: 0.25
+    network:
+      min: 64m
+      max: 128m
+parallelism:
+  default: 2
+pipeline:
+  max-parallelism: 128
+execution:
+  buffer-timeout:
+    enabled: true
+    interval: 0 ms
+  checkpointing:
+    interval: 2 s
+    timeout: 60 s
+state:
+  backend:
+    type: rocksdb
+    incremental: true
+  checkpoints:
+    dir: file:///state/checkpoints
+  savepoints:
+    dir: file:///state/savepoints
+rest:
+  bind-address: 0.0.0.0
+  address: flink-jobmanager
