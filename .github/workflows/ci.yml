@@ -23,3 +23,20 @@ jobs:
         run: make deploy-check
       - name: Prove installed preview
         run: make demo
+  storage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Start Postgres and Kafka with fixed topics
+        run: make m2-storage
+      - name: Run tests against the live database
+        run: make db-test
+      - name: Show service logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail 200 postgres kafka
+      - name: Remove storage
+        if: always()
+        run: docker compose down -v --remove-orphans
