@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/VivianSobers/swipeline/internal/contract"
@@ -70,5 +71,62 @@ func TestTrustedMetadata(t *testing.T) {
 				t.Fatalf("accepted client %s=%s", field, value)
 			}
 		}
+	}
+}
+
+func TestRunRangeAndVersions(t *testing.T) {
+	e, err := contract.Decode(sample(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := Run{ID: e.RunID, Identity: "identity", Day: e.AuthorizationDate, Rule: e.RuleVersion, Reference: e.ReferenceVersion,
+		Mode: "latency", TPS: 50, Compression: 720, Concurrency: 128, Partitioner: "sha256-json-v1", Partitions: 4}
+	if err := good.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := good.Check(e); err != nil {
+		t.Fatal(err)
+	}
+	throughput := good
+	throughput.Mode = "throughput"
+	if err := throughput.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*Run){
+		"adaptive mode":    func(r *Run) { r.Mode = "adaptive" },
+		"bad day":          func(r *Run) { r.Day = "2026-13-01" },
+		"bad run id":       func(r *Run) { r.ID = "../x" },
+		"empty identity":   func(r *Run) { r.Identity = "" },
+		"partitioner":      func(r *Run) { r.Partitioner = "murmur2" },
+		"partitions":       func(r *Run) { r.Partitions = 6 },
+		"no concurrency":   func(r *Run) { r.Concurrency = 0 },
+		"concurrency 129":  func(r *Run) { r.Concurrency = 129 },
+		"zero tps":         func(r *Run) { r.TPS = 0 },
+		"nan tps":          func(r *Run) { r.TPS = math.NaN() },
+		"inf compression":  func(r *Run) { r.Compression = math.Inf(1) },
+		"zero compression": func(r *Run) { r.Compression = 0 },
+	} {
+		r := good
+		mutate(&r)
+		if r.Validate() == nil {
+			t.Fatalf("%s accepted", name)
+		}
+	}
+	for name, mutate := range map[string]func(*Run){
+		"run":       func(r *Run) { r.ID = "other" },
+		"day":       func(r *Run) { r.Day = "2026-10-09" },
+		"rule":      func(r *Run) { r.Rule = "rules-v9" },
+		"reference": func(r *Run) { r.Reference = "ref-v9" },
+	} {
+		r := good
+		mutate(&r)
+		if r.Check(e) == nil {
+			t.Fatalf("%s conflict accepted", name)
+		}
+	}
+	late := e
+	late.EventTimeMS += 86400000
+	if good.Check(late) == nil {
+		t.Fatal("event outside business day accepted")
 	}
 }
