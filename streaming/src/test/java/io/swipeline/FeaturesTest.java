@@ -86,4 +86,23 @@ private ObjectNode request(long at,long amount) throws Exception {
  ObjectNode restored=Wire.parse(s.toString());
  assertEquals(Merchant.apply(s,request(70000,200)),Merchant.apply(restored,request(70000,200)));
 }
+@Test public void ruleThresholdAndPrecedence() throws Exception {
+ ObjectNode n=request(1000,100);n.put("transaction_id","tx");n.put("velocity_60s",6);n.put("spend_anomaly",true);
+ n.put("merchant_distinct_estimate",80);n.put("merchant_attempts",100);n.put("merchant_small",80);
+ ObjectNode p=Rules.score(n,1000);
+ assertEquals("DECLINE",p.path("decision").asText());assertEquals("CARD_TESTING",p.path("reason").asText());assertEquals(3,p.path("fraud_flags").size());
+ n.put("merchant_distinct_estimate",0);n.put("spend_anomaly",false);
+ assertEquals("APPROVE",Rules.score(n,1000).path("decision").asText());
+}
+
+@Test public void rulesRespectExactThresholdsAndDoNotMutateInput() throws Exception {
+ ObjectNode n=request(1000,100);n.put("transaction_id","tx");n.put("velocity_60s",5);
+ ObjectNode before=n.deepCopy(),p=Rules.score(n,1000);assertEquals(before,n);assertEquals(0,p.path("score").asInt());assertEquals("RULES_CLEAR",p.path("reason").asText());
+ n.put("velocity_60s",6);n.put("spend_anomaly",true);p=Rules.score(n,1000);
+ assertEquals(80,p.path("score").asInt());assertEquals("DECLINE",p.path("decision").asText());assertEquals("CARD_VELOCITY",p.path("reason").asText());
+ n.put("velocity_60s",0);n.put("spend_anomaly",false);n.put("merchant_distinct_estimate",50);n.put("merchant_attempts",100);n.put("merchant_small",79);
+ assertEquals("APPROVE",Rules.score(n,1000).path("decision").asText());
+ n.put("merchant_small",80);assertEquals(100,Rules.score(n,1000).path("score").asInt());
+ n.put("merchant_distinct_estimate",49.99);assertEquals(0,Rules.score(n,1000).path("score").asInt());
+}
 }
