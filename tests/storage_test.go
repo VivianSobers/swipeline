@@ -89,3 +89,19 @@ func TestTopicTopology(t *testing.T) {
 		}
 	}
 }
+
+func TestPrometheusScrapesGateway(t *testing.T) {
+	jobs := map[string]string{}
+	var job string
+	for _, line := range lines(t, "../deploy/prometheus.yml") {
+		if name, ok := strings.CutPrefix(line, "- job_name: "); ok {
+			job = name
+		}
+		if targets, ok := strings.CutPrefix(line, "- targets: "); ok {
+			jobs[job] = targets
+		}
+	}
+	if jobs["gateway"] != "[gateway:8081]" {
+		t.Fatalf("scrape jobs: %v", jobs)
+	}
+}
