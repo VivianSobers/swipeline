@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/VivianSobers/swipeline/internal/auth"
@@ -177,5 +178,21 @@ func TestDecisionSchema(t *testing.T) {
 		"stand-in score":     func(m map[string]any) { m["score"] = 0 },
 		"stand-in distinct":  func(m map[string]any) { m["merchant_distinct_estimate"] = 0 },
 		"missing null score": func(m map[string]any) { delete(m, "score") },
+	})
+}
+
+func TestDLQSchema(t *testing.T) {
+	letter := map[string]any{"origin_topic": "swipeline.auth.requests.v1", "partition": 2, "offset": 17, "error_code": "INVALID_JSON",
+		"payload_hash": contract.ID("unparseable"), "sanitized_input": "{\"run_id\":", "detected_at_ms": 1000}
+	check(t, compile(t, "urn:swipeline:dlq:v1"), letter, map[string]func(map[string]any){
+		"missing origin":    func(m map[string]any) { delete(m, "origin_topic") },
+		"foreign topic":     func(m map[string]any) { m["origin_topic"] = "payments" },
+		"negative offset":   func(m map[string]any) { m["offset"] = -1 },
+		"negative part":     func(m map[string]any) { m["partition"] = -1 },
+		"lowercase code":    func(m map[string]any) { m["error_code"] = "bad" },
+		"short hash":        func(m map[string]any) { m["payload_hash"] = "abc" },
+		"oversized input":   func(m map[string]any) { m["sanitized_input"] = strings.Repeat("x", 257) },
+		"control character": func(m map[string]any) { m["sanitized_input"] = "a\u0000b" },
+		"null detected at":  func(m map[string]any) { m["detected_at_ms"] = nil },
 	})
 }

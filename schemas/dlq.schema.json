@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:swipeline:dlq:v1",
+  "type": "object",
+  "required": ["origin_topic", "partition", "offset", "error_code", "payload_hash", "sanitized_input", "detected_at_ms"],
+  "properties": {
+    "origin_topic": {"type": "string", "pattern": "^swipeline\\.[a-z]+(\\.[a-z]+)*\\.v[0-9]+$"},
+    "partition": {"type": "integer", "minimum": 0},
+    "offset": {"type": "integer", "minimum": 0},
+    "error_code": {"type": "string", "pattern": "^[A-Z][A-Z_]{0,63}$"},
+    "payload_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sanitized_input": {"type": "string", "maxLength": 256, "pattern": "^[^\\x00-\\x1f\\x7f]*$"},
+    "detected_at_ms": {"type": "integer", "minimum": 0}
+  },
+  "additionalProperties": true
+}
