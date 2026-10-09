@@ -34,3 +34,35 @@ func TestGatewayDatabaseInit(t *testing.T) {
 		t.Fatalf("init script:\n%s", strings.Join(got, "\n"))
 	}
 }
+
+// A single combined broker/controller that never creates topics on demand,
+// so a typo in a producer cannot fork the fixed four-partition topology.
+func TestKafkaBrokerConfig(t *testing.T) {
+	props := map[string]string{}
+	for _, line := range lines(t, "../deploy/kafka.properties") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			t.Fatalf("malformed line %q", line)
+		}
+		if _, dup := props[key]; dup {
+			t.Fatalf("duplicate %s", key)
+		}
+		props[key] = value
+	}
+	for key, want := range map[string]string{
+		"process.roles":                    "broker,controller",
+		"controller.quorum.voters":         "1@kafka:9093",
+		"advertised.listeners":             "PLAINTEXT://kafka:9092",
+		"log.dirs":                         "/var/lib/kafka/data",
+		"auto.create.topics.enable":        "false",
+		"num.partitions":                   "4",
+		"default.replication.factor":       "1",
+		"offsets.topic.replication.factor": "1",
+		"transaction.state.log.min.isr":    "1",
+		"log.retention.hours":              "24",
+	} {
+		if props[key] != want {
+			t.Errorf("%s=%q, want %q", key, props[key], want)
+		}
+	}
+}
