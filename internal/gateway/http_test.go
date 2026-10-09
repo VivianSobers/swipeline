@@ -235,3 +235,13 @@ func TestReadinessRequiresProposalConsumer(t *testing.T) {
 		t.Fatal("ready without a database")
 	}
 }
+
+// Liveness reports only that the process serves HTTP; a database outage must
+// not get the gateway restarted while it holds pending deadlines.
+func TestGatewayLiveness(t *testing.T) {
+	s, _, _ := service(t)
+	_ = s.DB.DB.Close()
+	if invoke(s, http.MethodGet, "/healthz", nil, "").Code != http.StatusOK {
+		t.Fatal("no liveness")
+	}
+}
