@@ -114,11 +114,12 @@ func TestRenderedBindMountsAreReadOnlyAndSELinuxShared(t *testing.T) {
 	}
 }
 
-// Kafka CLI tools inherit KAFKA_HEAP_OPTS. The broker's fixed 384m heap must
-// not be duplicated by every healthcheck JVM inside the same 768m budget.
-func TestRenderedKafkaHealthcheckHasOwnHeap(t *testing.T) {
+// Kafka is healthy only once the six topics exist and validate, so services
+// that depend on it never start against a broker without its topology. The
+// check itself starts no JVM: it reads a marker the bootstrap leaves behind.
+func TestRenderedKafkaHealthRequiresTopics(t *testing.T) {
 	test := rendered(t)["kafka"].Healthcheck.Test
-	if len(test) != 2 || test[0] != "CMD-SHELL" || !strings.HasPrefix(test[1], "KAFKA_HEAP_OPTS=-Xmx64m ") {
+	if len(test) != 2 || test[0] != "CMD-SHELL" || !strings.Contains(test[1], "test -f /tmp/topics-ready") || strings.Contains(test[1], "kafka-topics.sh") {
 		t.Fatalf("healthcheck: %q", test)
 	}
 }

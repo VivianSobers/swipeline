@@ -97,7 +97,13 @@ services:
     command:
       - |
         /opt/kafka/bin/kafka-storage.sh format --ignore-formatted --cluster-id MkU3OEVBNTcwNTJENDM2Qk --config /etc/kafka/swipeline.properties
-        exec /opt/kafka/bin/kafka-server-start.sh /etc/kafka/swipeline.properties
+        rm -f /tmp/topics-ready
+        /opt/kafka/bin/kafka-server-start.sh /etc/kafka/swipeline.properties &
+        broker=$$!
+        trap 'kill -TERM $$broker; wait $$broker' TERM INT
+        until bash /opt/swipeline/topics.sh; do kill -0 $$broker; sleep 2; done
+        touch /tmp/topics-ready
+        wait $$broker
     volumes:
       - kafka-data:/var/lib/kafka/data
       - type: bind
@@ -115,11 +121,11 @@ services:
     tmpfs:
       - /tmp:size=64m,mode=1777,exec
     healthcheck:
-      test: [CMD-SHELL, "KAFKA_HEAP_OPTS=-Xmx64m /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list >/dev/null"]
-      interval: 5s
-      timeout: 10s
+      test: [CMD-SHELL, "test -f /tmp/topics-ready && bash -c '</dev/tcp/127.0.0.1/9092'"]
+      interval: 2s
+      timeout: 3s
       retries: 30
-      start_period: 10s
+      start_period: 90s
     logging:
       driver: json-file
       options:
