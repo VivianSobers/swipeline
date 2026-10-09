@@ -2,7 +2,10 @@ package tests
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -15,8 +18,13 @@ type service struct {
 	Configs     []any    `json:"configs"`
 	Tmpfs       []string `json:"tmpfs"`
 	Healthcheck struct {
-		Test []string `json:"test"`
+		Test        []string `json:"test"`
+		Interval    string   `json:"interval"`
+		StartPeriod string   `json:"start_period"`
 	} `json:"healthcheck"`
+	DependsOn map[string]struct {
+		Condition string `json:"condition"`
+	} `json:"depends_on"`
 	Ports []struct {
 		HostIP string `json:"host_ip"`
 	} `json:"ports"`
@@ -145,4 +153,58 @@ func TestRenderedKafkaTmpAllowsNativeCodecs(t *testing.T) {
 		}
 	}
 	t.Fatal("kafka /tmp must allow exec for native codecs")
+}
+
+// Run the rendered health command against REST responses, including a running
+// job whose tasks have not finished deploying.
+func TestRenderedAuthorizationReadiness(t *testing.T) {
+	services := rendered(t)
+	h := services["flink-jobmanager"].Healthcheck
+	if len(h.Test) != 2 || h.Test[0] != "CMD-SHELL" {
+		t.Fatalf("missing authorization healthcheck: %q", h.Test)
+	}
+	if h.Interval != "2s" || h.StartPeriod != "2m0s" {
+		t.Fatalf("health timing: %+v", h)
+	}
+	if services["flink-taskmanager"].DependsOn["flink-jobmanager"].Condition != "service_started" {
+		t.Fatal("taskmanager must start before the job is healthy")
+	}
+	dir := t.TempDir()
+	curl := "#!/bin/sh\n[ \"$*\" = \"-fsS --max-time 2 http://127.0.0.1:8081/jobs/overview\" ] || exit 2\n[ \"$REST_FAIL\" != 1 ] || exit 1\nprintf '%s\\n' \"$REST_BODY\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(curl), 0755); err != nil {
+		t.Fatal(err)
+	}
+	ready := `{"jid":"abc","name":"authorization","state":"RUNNING","tasks":{"total":6,"created":0,"scheduled":0,"deploying":0,"initializing":0,"reconciling":0,"running":6}}`
+	cases := []struct {
+		name, body    string
+		fail, healthy bool
+	}{
+		{"ready", `{"jobs":[` + ready + `]}`, false, true},
+		{"empty", `{"jobs":[]}`, false, false},
+		{"unavailable", "", true, false},
+		{"wrong job", `{"jobs":[` + strings.ReplaceAll(ready, "authorization", "other") + `]}`, false, false},
+		{"starting", `{"jobs":[` + strings.ReplaceAll(ready, "RUNNING", "INITIALIZING") + `]}`, false, false},
+		{"unrelated running", `{"jobs":[` + strings.ReplaceAll(ready, "RUNNING", "RESTARTING") + "," + strings.ReplaceAll(ready, "authorization", "other") + `]}`, false, false},
+	}
+	for _, state := range []string{"created", "scheduled", "deploying", "initializing", "reconciling"} {
+		cases = append(cases, struct {
+			name, body    string
+			fail, healthy bool
+		}{state, `{"jobs":[` + strings.ReplaceAll(ready, fmt.Sprintf("%q:0", state), fmt.Sprintf("%q:1", state)) + `]}`, false, false})
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Compose preserves dollar escaping in config output and unescapes it at container creation.
+			cmd := exec.Command("sh", "-c", strings.ReplaceAll(h.Test[1], "$$", "$"))
+			fail := "0"
+			if tc.fail {
+				fail = "1"
+			}
+			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "REST_BODY="+tc.body, "REST_FAIL="+fail)
+			out, err := cmd.CombinedOutput()
+			if (err == nil) != tc.healthy {
+				t.Fatalf("healthy=%v want %v: %s %v", err == nil, tc.healthy, out, err)
+			}
+		})
+	}
 }

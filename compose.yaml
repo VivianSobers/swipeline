@@ -182,6 +182,20 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          job=$$(curl -fsS --max-time 2 http://127.0.0.1:8081/jobs/overview |
+          grep -oE '\{[^{}]*"name"[[:space:]]*:[[:space:]]*"authorization"[^{}]*\{[^{}]*\}[^{}]*\}') &&
+          printf '%s\n' "$$job" | grep -qE '"state"[[:space:]]*:[[:space:]]*"RUNNING"' &&
+          for state in created scheduled deploying initializing reconciling; do
+            printf '%s\n' "$$job" | grep -qE "\"$$state\"[[:space:]]*:[[:space:]]*0[[:space:]]*[,}]" || exit 1;
+          done
+      interval: 2s
+      timeout: 3s
+      start_period: 120s
+      retries: 30
     restart: on-failure
     logging:
       driver: json-file
