@@ -290,3 +290,27 @@ func TestBacklogMetrics(t *testing.T) {
 		t.Fatal("backlog reported without a database")
 	}
 }
+
+func TestCommittedWorkWakesRelay(t *testing.T) {
+	s, run, e := service(t)
+	ctx := context.Background()
+	if err := s.DB.Register(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Admissions.Submit(ctx, store.Input{Event: e, Received: time.Now().Add(-time.Second).UnixMilli()}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-s.Outbox:
+	default:
+		t.Fatal("admission did not wake the relay")
+	}
+	if _, err := s.Finals.Submit(ctx, store.Choice{ID: e.TransactionID}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-s.Outbox:
+	default:
+		t.Fatal("new final did not wake the relay")
+	}
+}

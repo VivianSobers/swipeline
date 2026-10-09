@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/VivianSobers/swipeline/internal/store"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -95,4 +96,28 @@ func RelayOnce(ctx context.Context, s *store.Store, p *kgo.Client) (int, error) 
 		return 0, err
 	}
 	return len(acked), nil
+}
+
+// Relay sends outbox rows until ctx ends: immediately while rows remain,
+// then on each wake signal, and every 100 ms in case a signal was missed or
+// an earlier send failed. Errors are reported and retried after a pause;
+// unacknowledged rows stay unsent and keep their order.
+func Relay(ctx context.Context, s *store.Store, p *kgo.Client, wake <-chan struct{}, report func(error)) error {
+	for {
+		n, err := RelayOnce(ctx, s, p)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil {
+			report(err)
+		} else if n > 0 {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-wake:
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }

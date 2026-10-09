@@ -9,6 +9,7 @@ import (
 
 	"github.com/VivianSobers/swipeline/internal/auth"
 	"github.com/VivianSobers/swipeline/internal/contract"
+	"github.com/VivianSobers/swipeline/internal/gateway"
 	"github.com/VivianSobers/swipeline/internal/generator"
 	"github.com/VivianSobers/swipeline/internal/store"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -106,5 +107,40 @@ func TestRelayDeliversToNamedPartition(t *testing.T) {
 	var sent auth.Request
 	if err = json.Unmarshal(got.Value, &sent); err != nil || string(got.Key) != string(key) || sent != row.Request {
 		t.Fatalf("relayed %s / %s", got.Key, got.Value)
+	}
+}
+
+func TestRelayLoopSendsOnWake(t *testing.T) {
+	s, brokers := live(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	p, err := Producer(brokers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	service := gateway.New(ctx, s)
+	run, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- Relay(run, s, p, service.Outbox, func(err error) { t.Log("relay:", err) }) }()
+	row := admitted(t, s, time.Now().Add(time.Minute))
+	service.Wake()
+	for {
+		var sent bool
+		if err := s.DB.QueryRowContext(ctx, "SELECT sent_at IS NOT NULL FROM outbox WHERE event_id=$1", row.Request.EventID).Scan(&sent); err != nil {
+			t.Fatal(err)
+		}
+		if sent {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("relay loop never sent the admission")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	stop()
+	if err := <-done; err != context.Canceled {
+		t.Fatal(err)
 	}
 }

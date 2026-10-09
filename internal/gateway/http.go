@@ -23,6 +23,8 @@ type Service struct {
 	Admissions    *Queue[store.Input]
 	Finals        *Queue[store.Choice]
 	ConsumerReady atomic.Bool
+	// Outbox receives a signal whenever new outbox rows commit.
+	Outbox chan struct{}
 
 	mu      sync.Mutex
 	waiters map[string][]chan *auth.Final
@@ -35,11 +37,17 @@ type Service struct {
 // Every committed final, whether from a proposal or a deadline, is handed to
 // the requests waiting on its transaction.
 func New(ctx context.Context, db *store.Store) *Service {
-	s := &Service{DB: db, waiters: map[string][]chan *auth.Final{}, budget: map[string]*histogram{}}
+	s := &Service{DB: db, Outbox: make(chan struct{}, 1), waiters: map[string][]chan *auth.Final{}, budget: map[string]*histogram{}}
 	for mode := range targets {
 		s.budget[mode] = newHistogram(0.005, 0.01, 0.02, 0.035, 0.05, 0.08, 0.1, 0.25, 0.5, 1)
 	}
-	s.Admissions = NewQueue(ctx, 1024, db.Admit)
+	s.Admissions = NewQueue(ctx, 1024, func(ctx context.Context, in []store.Input) ([]store.Row, error) {
+		rows, err := db.Admit(ctx, in)
+		if err == nil {
+			s.Wake()
+		}
+		return rows, err
+	})
 	s.Finals = NewQueue(ctx, 1024, s.finalize)
 	return s
 }
@@ -54,10 +62,19 @@ func (s *Service) finalize(ctx context.Context, in []store.Choice) ([]store.Row,
 	for _, r := range rows {
 		if r.Fresh {
 			s.counts.add(r.Final)
+			s.Wake()
 		}
 	}
 	s.deliver(rows)
 	return rows, nil
+}
+
+// Wake signals the relay without blocking; one pending signal is enough.
+func (s *Service) Wake() {
+	select {
+	case s.Outbox <- struct{}{}:
+	default:
+	}
 }
 
 // watch registers interest in id's final until the returned func is called.
