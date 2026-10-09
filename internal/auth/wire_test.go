@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/VivianSobers/swipeline/internal/contract"
 	"github.com/VivianSobers/swipeline/internal/generator"
 )
 
@@ -37,4 +38,20 @@ func sample(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func TestIdempotencyHeader(t *testing.T) {
+	b := sample(t)
+	e, err := contract.Decode(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decode(b, e.TransactionID); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"", contract.ID("other"), e.EventID} {
+		if _, err := Decode(b, key); err == nil {
+			t.Fatalf("accepted key %q", key)
+		}
+	}
 }

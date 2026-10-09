@@ -2,7 +2,11 @@
 // gateway, the replayer and the streaming job.
 package auth
 
-import "github.com/VivianSobers/swipeline/internal/contract"
+import (
+	"errors"
+
+	"github.com/VivianSobers/swipeline/internal/contract"
+)
 
 // Request is an admitted authorization: the client's event plus metadata
 // that only the gateway may assign.
@@ -52,4 +56,18 @@ type Final struct {
 	Source     string   `json:"decision_source"`
 	Finalized  int64    `json:"finalized_at_ms"`
 	Latency    float64  `json:"decision_latency_ms"`
+}
+
+// Decode parses a client authorization whose Idempotency-Key header is key.
+// The key must equal the transaction ID, so a retry can never be bound to a
+// different transaction.
+func Decode(b []byte, key string) (contract.Event, error) {
+	e, err := contract.Decode(b)
+	if err != nil {
+		return e, err
+	}
+	if key != e.TransactionID {
+		return e, errors.New("idempotency key mismatch")
+	}
+	return e, nil
 }
