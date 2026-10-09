@@ -17,4 +17,10 @@ public final class Rules {
   p.remove(java.util.List.of("spend_anomaly","merchant_attempts","merchant_small","spend_60s_minor"));
   return p;
  }
+public static boolean stale(ObjectNode n,long now){return Math.max(0,now-Wire.integer(n,"received_at_ms"))>2000;}
+public static ObjectNode staleProposal(ObjectNode input,long now)throws Exception{
+ ObjectNode n=input.deepCopy();n.put("velocity_60s",0);n.put("usual_minor",100);n.put("spend_ratio",0);
+ n.put("merchant_distinct_estimate",0);n.put("features_late",false);n.put("spend_anomaly",false);
+ ObjectNode p=score(n,now);p.put("decision","DECLINE");p.put("reason","STALE_REQUEST");return p;
+}
 }

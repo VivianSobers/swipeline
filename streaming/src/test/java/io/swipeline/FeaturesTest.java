@@ -105,4 +105,24 @@ private ObjectNode request(long at,long amount) throws Exception {
  n.put("merchant_small",80);assertEquals(100,Rules.score(n,1000).path("score").asInt());
  n.put("merchant_distinct_estimate",49.99);assertEquals(0,Rules.score(n,1000).path("score").asInt());
 }
+@Test public void stalenessUsesOnlyAdmissionLag() throws Exception {
+ ObjectNode n=request(1,100);n.put("received_at_ms",10000);n.put("transaction_id","tx");
+ assertFalse(Rules.stale(n,12000));assertTrue(Rules.stale(n,12001));assertFalse(Rules.stale(n,9000));
+ assertEquals("STALE_REQUEST",Rules.staleProposal(n,12001).path("reason").asText());
+}
+
+@Test public void staleProposalDoesNotMutateInput() throws Exception {
+ ObjectNode n=request(1,100);n.put("received_at_ms",10000);n.put("transaction_id","tx");
+ ObjectNode before=n.deepCopy(),p=Rules.staleProposal(n,12001);
+ assertEquals(before,n);assertEquals("DECLINE",p.path("decision").asText());assertEquals(0,p.path("fraud_flags").size());
+ n.put("event_time_ms",Long.MAX_VALUE);assertTrue(Rules.stale(n,12001));
+}
+@Test public void staleProposalClearsPriorFraudSignals() throws Exception {
+ ObjectNode n=request(1,50000);n.put("received_at_ms",10000);n.put("transaction_id","tx");
+ n.put("spend_anomaly",true);n.put("velocity_60s",6);n.put("merchant_distinct_estimate",80);
+ n.put("merchant_attempts",100);n.put("merchant_small",80);
+ ObjectNode before=n.deepCopy(),p=Rules.staleProposal(n,12001);
+ assertEquals(0,p.path("score").asInt());assertEquals(0,p.path("fraud_flags").size());
+ assertEquals("STALE_REQUEST",p.path("reason").asText());assertEquals("DECLINE",p.path("decision").asText());assertEquals(before,n);
+}
 }
