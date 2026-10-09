@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:swipeline:decision:v1",
+  "allOf": [
+    {"$ref": "urn:swipeline:auth-request:v1"},
+    {
+      "if": {"properties": {"decision_source": {"const": "STAND_IN"}}},
+      "then": {
+        "properties": {
+          "decision": {"const": "DECLINE"},
+          "reason": {"enum": ["SCORING_UNAVAILABLE", "SCORING_TIMEOUT", "NETWORK_UNAVAILABLE"]},
+          "fraud_flags": {"maxItems": 0},
+          "proposal_id": {"type": "null"},
+          "score": {"type": "null"},
+          "velocity_60s": {"type": "null"},
+          "usual_minor": {"type": "null"},
+          "spend_ratio": {"type": "null"},
+          "merchant_distinct_estimate": {"type": "null"},
+          "features_late": {"type": "null"}
+        }
+      },
+      "else": {
+        "properties": {
+          "proposal_id": {"type": "string"},
+          "score": {"type": "integer"},
+          "velocity_60s": {"type": "integer"},
+          "usual_minor": {"type": "integer"},
+          "spend_ratio": {"type": "number"},
+          "merchant_distinct_estimate": {"type": "number"},
+          "features_late": {"type": "boolean"}
+        }
+      }
+    }
+  ],
+  "type": "object",
+  "required": ["decision_id", "decision", "reason", "fraud_flags", "proposal_id", "score", "velocity_60s", "usual_minor", "spend_ratio", "merchant_distinct_estimate", "features_late", "decision_source", "finalized_at_ms", "decision_latency_ms"],
+  "properties": {
+    "decision_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "decision": {"enum": ["APPROVE", "DECLINE"]},
+    "reason": {"type": "string", "pattern": "^[A-Z][A-Z_]{0,63}$"},
+    "fraud_flags": {"type": "array", "uniqueItems": true, "items": {"enum": ["CARD_TESTING", "CARD_VELOCITY", "SPEND_ANOMALY"]}},
+    "proposal_id": {"type": ["string", "null"], "minLength": 1},
+    "score": {"type": ["integer", "null"], "minimum": 0, "maximum": 180},
+    "velocity_60s": {"type": ["integer", "null"], "minimum": 0},
+    "usual_minor": {"type": ["integer", "null"], "minimum": 100, "maximum": 9223372036854775807},
+    "spend_ratio": {"type": ["number", "null"], "minimum": 0},
+    "merchant_distinct_estimate": {"type": ["number", "null"], "minimum": 0},
+    "features_late": {"type": ["boolean", "null"]},
+    "decision_source": {"enum": ["FLINK", "STAND_IN"]},
+    "finalized_at_ms": {"type": "integer", "minimum": 0},
+    "decision_latency_ms": {"type": "number", "minimum": 0}
+  },
+  "additionalProperties": true
+}

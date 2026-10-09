@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/VivianSobers/swipeline/internal/auth"
+	"github.com/VivianSobers/swipeline/internal/contract"
 	"github.com/VivianSobers/swipeline/internal/generator"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -147,5 +148,34 @@ func TestAuthProposalSchema(t *testing.T) {
 		"negative ratio":      func(m map[string]any) { m["spend_ratio"] = -0.1 },
 		"string late":         func(m map[string]any) { m["features_late"] = "false" },
 		"missing request":     func(m map[string]any) { delete(m, "received_at_ms") },
+	})
+}
+
+func TestDecisionSchema(t *testing.T) {
+	wire(t, "decision.schema.json", reflect.TypeOf(auth.Final{}))
+	s := compile(t, "urn:swipeline:decision:v1")
+	p := proposal(t)
+	scored := auth.Final{Request: p.Request, DecisionID: contract.ID(p.TransactionID, "decision"), Decision: p.Decision, Reason: p.Reason, Flags: p.Flags,
+		ProposalID: &p.ProposalID, Score: &p.Score, Velocity: &p.Velocity, Usual: &p.Usual, Ratio: &p.Ratio, Distinct: &p.Distinct, Late: &p.Late,
+		Source: "FLINK", Finalized: 1030, Latency: 30}
+	check(t, s, scored, map[string]func(map[string]any){
+		"null proposal":   func(m map[string]any) { m["proposal_id"] = nil },
+		"null score":      func(m map[string]any) { m["score"] = nil },
+		"null late":       func(m map[string]any) { m["features_late"] = nil },
+		"unknown source":  func(m map[string]any) { m["decision_source"] = "CACHE" },
+		"bad decision id": func(m map[string]any) { m["decision_id"] = "d1" },
+		"negative delay":  func(m map[string]any) { m["decision_latency_ms"] = -1 },
+		"missing request": func(m map[string]any) { delete(m, "seal_epoch") },
+	})
+	standIn := auth.Final{Request: p.Request, DecisionID: contract.ID(p.TransactionID, "decision"), Decision: "DECLINE", Reason: "SCORING_TIMEOUT",
+		Flags: []string{}, Source: "STAND_IN", Finalized: 1035, Latency: 35}
+	check(t, s, standIn, map[string]func(map[string]any){
+		"stand-in approval":  func(m map[string]any) { m["decision"] = "APPROVE" },
+		"stand-in reason":    func(m map[string]any) { m["reason"] = "CARD_TESTING" },
+		"stand-in flags":     func(m map[string]any) { m["fraud_flags"] = []any{"CARD_VELOCITY"} },
+		"stand-in proposal":  func(m map[string]any) { m["proposal_id"] = "p1" },
+		"stand-in score":     func(m map[string]any) { m["score"] = 0 },
+		"stand-in distinct":  func(m map[string]any) { m["merchant_distinct_estimate"] = 0 },
+		"missing null score": func(m map[string]any) { delete(m, "score") },
 	})
 }
