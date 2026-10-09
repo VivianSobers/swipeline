@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:swipeline:auth-request:v1",
+  "allOf": [{"$ref": "urn:swipeline:preview:v1"}],
+  "type": "object",
+  "required": ["received_at_ms", "scoring_deadline_at_ms", "response_deadline_at_ms", "deadline_mode", "seal_epoch", "close_day", "accepted_card_seq"],
+  "properties": {
+    "received_at_ms": {"type": "integer", "minimum": 0},
+    "scoring_deadline_at_ms": {"type": "integer", "minimum": 0},
+    "response_deadline_at_ms": {"type": "integer", "minimum": 0},
+    "deadline_mode": {"enum": ["latency", "throughput"]},
+    "seal_epoch": {"type": "integer", "minimum": 0},
+    "close_day": {"type": "string", "format": "date"},
+    "accepted_card_seq": {"type": "integer", "minimum": 0}
+  },
+  "additionalProperties": true
+}
