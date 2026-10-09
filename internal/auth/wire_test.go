@@ -130,3 +130,22 @@ func TestRunRangeAndVersions(t *testing.T) {
 		t.Fatal("event outside business day accepted")
 	}
 }
+
+func TestCanonicalKey(t *testing.T) {
+	if string(Key("ab", "c")) != `["ab","c"]` {
+		t.Fatalf("key encoding %s", Key("ab", "c"))
+	}
+	if string(Key("ab", "c")) == string(Key("a", "bc")) {
+		t.Fatal("ambiguous key")
+	}
+	// Pinned from an independent SHA-256 implementation; every producer and
+	// the streaming job must agree on these.
+	for _, tc := range []struct {
+		run, card string
+		want      int32
+	}{{"run", "card", 0}, {"a", "b", 1}, {"a", "e", 2}, {"a", "c", 3}} {
+		if got := Partition(Key(tc.run, tc.card)); got != tc.want {
+			t.Fatalf("%s/%s: partition %d, want %d", tc.run, tc.card, got, tc.want)
+		}
+	}
+}

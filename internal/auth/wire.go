@@ -3,6 +3,8 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -136,4 +138,15 @@ func (r Run) Check(e contract.Event) error {
 		return errors.New("run content conflict")
 	}
 	return nil
+}
+
+// Key is the Kafka record key for a card in a run: the compact JSON array
+// [run, card], which no two distinct pairs share.
+func Key(run, card string) []byte { b, _ := json.Marshal([]string{run, card}); return b }
+
+// Partition implements partitioner sha256-json-v1: the first four bytes of
+// SHA-256(key) as a big-endian unsigned integer, modulo 4.
+func Partition(key []byte) int32 {
+	h := sha256.Sum256(key)
+	return int32(binary.BigEndian.Uint32(h[:4]) % 4)
 }
