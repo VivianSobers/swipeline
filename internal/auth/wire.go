@@ -3,7 +3,9 @@
 package auth
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/VivianSobers/swipeline/internal/contract"
 )
@@ -58,13 +60,25 @@ type Final struct {
 	Latency    float64  `json:"decision_latency_ms"`
 }
 
+// trusted lists the admission fields only the gateway may assign.
+var trusted = []string{"received_at_ms", "scoring_deadline_at_ms", "response_deadline_at_ms", "deadline_mode", "seal_epoch", "close_day", "accepted_card_seq"}
+
 // Decode parses a client authorization whose Idempotency-Key header is key.
 // The key must equal the transaction ID, so a retry can never be bound to a
-// different transaction.
+// different transaction. Client-supplied admission metadata is rejected.
 func Decode(b []byte, key string) (contract.Event, error) {
 	e, err := contract.Decode(b)
 	if err != nil {
 		return e, err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return e, err
+	}
+	for _, k := range trusted {
+		if _, ok := raw[k]; ok {
+			return e, fmt.Errorf("client supplied trusted field %s", k)
+		}
 	}
 	if key != e.TransactionID {
 		return e, errors.New("idempotency key mismatch")

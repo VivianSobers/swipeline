@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -52,6 +53,22 @@ func TestIdempotencyHeader(t *testing.T) {
 	for _, key := range []string{"", contract.ID("other"), e.EventID} {
 		if _, err := Decode(b, key); err == nil {
 			t.Fatalf("accepted key %q", key)
+		}
+	}
+}
+
+func TestTrustedMetadata(t *testing.T) {
+	b := sample(t)
+	e, err := contract.Decode(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"received_at_ms", "scoring_deadline_at_ms", "response_deadline_at_ms", "deadline_mode", "seal_epoch", "close_day", "accepted_card_seq"} {
+		for _, value := range []string{"0", "null", `"x"`} {
+			bad := bytes.Replace(b, []byte("{"), []byte(`{"`+field+`":`+value+`,`), 1)
+			if _, err := Decode(bad, e.TransactionID); err == nil {
+				t.Fatalf("accepted client %s=%s", field, value)
+			}
 		}
 	}
 }
