@@ -270,3 +270,23 @@ func TestBudgetMetrics(t *testing.T) {
 		}
 	}
 }
+
+func TestBacklogMetrics(t *testing.T) {
+	s, _, _ := service(t)
+	body := invoke(s, http.MethodGet, "/metrics", nil, "").Body.String()
+	for _, prefix := range []string{
+		"swipeline_gateway_database_up 1\n",
+		"swipeline_gateway_pending_authorizations ",
+		"swipeline_gateway_outbox_unsent ",
+		"swipeline_gateway_outbox_oldest_age_seconds ",
+	} {
+		if !strings.Contains(body, "\n"+prefix) {
+			t.Fatalf("missing %q", prefix)
+		}
+	}
+	_ = s.DB.DB.Close()
+	body = invoke(s, http.MethodGet, "/metrics", nil, "").Body.String()
+	if !strings.Contains(body, "\nswipeline_gateway_database_up 0\n") || strings.Contains(body, "outbox_oldest_age_seconds ") {
+		t.Fatal("backlog reported without a database")
+	}
+}

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -113,4 +114,22 @@ func (s *Service) metrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "swipeline_gateway_latency_target_seconds{deadline_mode=%q} %g\n", mode, targets[mode].Seconds())
 	}
 	s.counts.write(w)
+	ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+	defer cancel()
+	b, err := s.DB.Backlog(ctx)
+	up := 0
+	if err == nil {
+		up = 1
+	}
+	fmt.Fprintln(w, "# HELP swipeline_gateway_database_up Whether the backlog query succeeded.")
+	fmt.Fprintf(w, "# TYPE swipeline_gateway_database_up gauge\nswipeline_gateway_database_up %d\n", up)
+	if err != nil {
+		return
+	}
+	fmt.Fprintln(w, "# HELP swipeline_gateway_pending_authorizations Admissions without a final outcome.")
+	fmt.Fprintf(w, "# TYPE swipeline_gateway_pending_authorizations gauge\nswipeline_gateway_pending_authorizations %d\n", b.Pending)
+	fmt.Fprintln(w, "# HELP swipeline_gateway_outbox_unsent Outbox rows not yet acknowledged by Kafka.")
+	fmt.Fprintf(w, "# TYPE swipeline_gateway_outbox_unsent gauge\nswipeline_gateway_outbox_unsent %d\n", b.Unsent)
+	fmt.Fprintln(w, "# HELP swipeline_gateway_outbox_oldest_age_seconds Age of the oldest unsent outbox row.")
+	fmt.Fprintf(w, "# TYPE swipeline_gateway_outbox_oldest_age_seconds gauge\nswipeline_gateway_outbox_oldest_age_seconds %g\n", b.OldestUnsent)
 }
