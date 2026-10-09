@@ -2,3 +2,4 @@
 !go.mod
 !cmd
 !internal
+!go.sum
