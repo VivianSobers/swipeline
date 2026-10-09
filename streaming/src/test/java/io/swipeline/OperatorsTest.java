@@ -71,4 +71,63 @@ public class OperatorsTest {
    assertEquals(1,Wire.parse(cardOutput(h).value).path("velocity_60s").asInt());
   }
  }
+ static KeyedOneInputStreamOperatorTestHarness<String,RequestRecord,String> merchant() throws Exception {
+  return new KeyedOneInputStreamOperatorTestHarness<>(new KeyedProcessOperator<>(new MerchantOperator()),(RequestRecord r)->"merchant",Types.STRING);
+ }
+ static String merchantOutput(KeyedOneInputStreamOperatorTestHarness<String,RequestRecord,String> h){return ((StreamRecord<String>)h.getOutput().poll()).getValue();}
+ static ObjectNode cardOf(String tx,String card,long amount,long at) throws Exception {
+  ObjectNode n=Wire.parse(fixture());n.put("card_token",card);n.put("transaction_id",Wire.id(tx));n.put("amount_minor",amount);n.put("event_time_ms",at);
+  n.put("event_id",Wire.id(n.path("transaction_id").asText(),"authorization","1"));
+  ObjectNode b=Wire.JSON.createObjectNode();
+  for(String k:new String[]{"run_id","transaction_id","source_seq","event_time_ms","card_token","merchant_id","mcc","issuer_bank_id","acquirer_bank_id","currency","amount_minor","authorization_date","rule_version","reference_version"})b.set(k,n.get(k));
+  n.put("payload_hash",java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(b.toString().getBytes(StandardCharsets.UTF_8))));
+  Wire.validate(n);return n;
+ }
+ /** The proposal for the gateway's own fixture is pinned in proposal.json, which the Go validator also checks. */
+ @Test public void fixtureProposalMatchesGatewayContract() throws Exception {
+  String enriched;
+  try(var h=card()){h.open();h.setProcessingTime(1000010);h.processElement(new StreamRecord<>(record(fixture())));enriched=cardOutput(h).value;}
+  try(var h=merchant()){
+   h.open();h.setProcessingTime(1000020);h.processElement(new StreamRecord<>(record(fixture()).enriched(enriched)));
+   ObjectNode p=Wire.parse(merchantOutput(h));
+   String golden;try(var in=OperatorsTest.class.getResourceAsStream("/proposal.json")){golden=new String(in.readAllBytes(),StandardCharsets.UTF_8);}
+   assertEquals(Wire.parse(golden),p);
+   ObjectNode request=Wire.parse(fixture());
+   for(String k:new String[]{"transaction_id","payload_hash","rule_version","run_id","event_time_ms","source_seq"})assertEquals(request.get(k),p.get(k));
+   assertEquals(Wire.id(request.path("transaction_id").asText(),"proposal"),p.path("proposal_id").asText());
+   assertTrue(p.path("usual_minor").asLong()>=100);assertEquals(1000020,p.path("scored_at_ms").asLong());
+  }
+ }
+ @Test public void merchantDuplicateSurvivesRestore() throws Exception {
+  String enriched;
+  try(var h=card()){h.open();h.setProcessingTime(1000010);h.processElement(new StreamRecord<>(record(fixture())));enriched=cardOutput(h).value;}
+  OperatorSubtaskState snapshot;String first;
+  try(var h=merchant()){
+   h.open();h.setProcessingTime(1000020);h.processElement(new StreamRecord<>(record(fixture()).enriched(enriched)));
+   first=merchantOutput(h);snapshot=h.snapshot(1,1000020);
+  }
+  try(var h=merchant()){
+   h.initializeState(snapshot);h.open();h.setProcessingTime(1000030);
+   h.processElement(new StreamRecord<>(record(fixture()).enriched(enriched)));
+   assertEquals(first,merchantOutput(h));
+   ObjectNode other=cardOf("other","card_"+"1".repeat(64),100,1791417600001L);
+   try(var c=card()){c.open();c.setProcessingTime(1000030);c.processElement(new StreamRecord<>(record(other.toString())));
+    h.processElement(new StreamRecord<>(record(other.toString()).enriched(cardOutput(c).value)));}
+   assertEquals(2,Wire.parse(merchantOutput(h)).path("merchant_distinct_estimate").asDouble(),0.1);
+  }
+ }
+ @Test public void cardTestingBurstIsDeclined() throws Exception {
+  try(var c=card();var h=merchant()){
+   c.open();h.open();c.setProcessingTime(1000010);h.setProcessingTime(1000020);ObjectNode last=null;
+   for(int i=0;i<80;i++){
+    ObjectNode n=cardOf("burst-"+i,String.format("card_%064x",i),100,1791417600000L+i);
+    c.processElement(new StreamRecord<>(record(n.toString())));
+    h.processElement(new StreamRecord<>(record(n.toString()).enriched(cardOutput(c).value)));
+    last=Wire.parse(merchantOutput(h));
+    if(i==10)assertEquals("APPROVE",last.path("decision").asText());
+   }
+   assertEquals("DECLINE",last.path("decision").asText());assertEquals("CARD_TESTING",last.path("reason").asText());
+   assertEquals("CARD_TESTING",last.path("fraud_flags").get(0).asText());
+  }
+ }
 }

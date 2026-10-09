@@ -120,3 +120,19 @@ func TestSanitizedDeadLetter(t *testing.T) {
 		t.Fatal(m)
 	}
 }
+
+// The streaming job's own test pins this proposal as its output for the
+// gateway's fixture request; the gateway must accept it unchanged.
+func TestStreamingProposalGoldenIsAccepted(t *testing.T) {
+	data, err := os.ReadFile("../../streaming/src/test/resources/proposal.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := Proposal(data)
+	if err != nil {
+		t.Fatal("gateway rejects the streaming job's proposal:", err)
+	}
+	if p.ProposalID != contract.ID(p.TransactionID, "proposal") || p.Decision != "APPROVE" || p.Usual != 2200 {
+		t.Fatalf("%+v", p)
+	}
+}
