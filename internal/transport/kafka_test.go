@@ -1,13 +1,18 @@
 package transport
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/VivianSobers/swipeline/internal/auth"
 	"github.com/VivianSobers/swipeline/internal/contract"
 	"github.com/VivianSobers/swipeline/internal/generator"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 func TestReplyClientOptions(t *testing.T) {
@@ -79,5 +84,39 @@ func TestProposalValidation(t *testing.T) {
 	}
 	if _, err := Proposal([]byte("not json")); err == nil {
 		t.Fatal("garbage accepted")
+	}
+}
+
+func TestSanitizedDeadLetter(t *testing.T) {
+	secret := []byte(`{"card_token":"card_secret","amount_minor":1}`)
+	b := DeadLetter("swipeline.auth.proposals.v1", 2, 9, "INVALID_PROPOSAL", secret)
+	if bytes.Contains(b, []byte("secret")) {
+		t.Fatal("payload leaked into the dead letter")
+	}
+	c := jsonschema.NewCompiler()
+	data, err := os.ReadFile("../../schemas/dlq.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc, value any
+	if err = json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.AddResource("urn:swipeline:dlq:v1", doc); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := c.Compile("urn:swipeline:dlq:v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(b, &value); err != nil {
+		t.Fatal(err)
+	}
+	if err = schema.Validate(value); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(secret)
+	if m := value.(map[string]any); m["payload_hash"] != hex.EncodeToString(sum[:]) || m["error_code"] != "INVALID_PROPOSAL" || m["offset"] != 9.0 {
+		t.Fatal(m)
 	}
 }

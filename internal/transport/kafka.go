@@ -5,6 +5,8 @@ package transport
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,4 +73,14 @@ func Proposal(b []byte) (auth.Proposal, error) {
 		}
 	}
 	return p, nil
+}
+
+// DeadLetter describes an unusable record without copying its contents:
+// operators get its origin and a hash to correlate, never card data.
+func DeadLetter(topic string, partition int32, offset int64, code string, b []byte) []byte {
+	sum := sha256.Sum256(b)
+	out, _ := json.Marshal(map[string]any{"origin_topic": topic, "partition": partition, "offset": offset,
+		"error_code": code, "payload_hash": hex.EncodeToString(sum[:]), "sanitized_input": "redacted",
+		"detected_at_ms": time.Now().UnixMilli()})
+	return out
 }
