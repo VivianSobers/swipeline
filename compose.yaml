@@ -164,8 +164,33 @@ services:
       options:
         max-size: 5m
         max-file: "2"
+  flink-jobmanager:
+    profiles: [core, full]
+    image: swipeline-streaming:m2
+    build:
+      context: .
+      dockerfile: deploy/streaming.Dockerfile
+    mem_limit: 512m
+    command: [standalone-job, --job-classname, io.swipeline.Authorization]
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      AUTH_PARALLELISM: "2"
+    volumes:
+      - flink-state:/state
+    ports:
+      - "127.0.0.1:${SWIPELINE_FLINK_PORT:-8082}:8081"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: on-failure
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
 volumes:
   preview-data:
   prometheus-data:
   postgres-data:
   kafka-data:
+  flink-state:
