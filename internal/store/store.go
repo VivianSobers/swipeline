@@ -307,3 +307,21 @@ func (s *Store) Pending(ctx context.Context) ([]Row, error) {
 	}
 	return out, rows.Err()
 }
+
+// Backlog is the gateway's durable work not yet done.
+type Backlog struct {
+	Pending      int64   // admissions without a final
+	Unsent       int64   // outbox rows not yet acknowledged by Kafka
+	OldestUnsent float64 // seconds since the oldest unsent row was written
+}
+
+// Backlog reads pending and unsent counts and the oldest unsent age on the
+// database clock.
+func (s *Store) Backlog(ctx context.Context) (Backlog, error) {
+	var b Backlog
+	err := s.DB.QueryRowContext(ctx, `SELECT
+		(SELECT count(*) FROM authorizations WHERE status='PENDING'),
+		count(*), coalesce(extract(epoch FROM clock_timestamp() - min(created_at)), 0)::float8
+		FROM outbox WHERE sent_at IS NULL`).Scan(&b.Pending, &b.Unsent, &b.OldestUnsent)
+	return b, err
+}

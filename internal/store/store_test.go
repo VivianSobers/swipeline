@@ -358,3 +358,17 @@ func TestOnlyTheCommittingCallIsFresh(t *testing.T) {
 		t.Fatal("no-op reported fresh")
 	}
 }
+
+func TestBacklogReportsUnsentAge(t *testing.T) {
+	s := database(t)
+	_, e := fixture(t, s)
+	admitAt(t, s, e, time.Now().Add(time.Minute))
+	time.Sleep(20 * time.Millisecond)
+	b, err := s.Backlog(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Pending < 1 || b.Unsent < 1 || b.OldestUnsent < 0.02 {
+		t.Fatalf("%+v", b)
+	}
+}
