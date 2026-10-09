@@ -27,13 +27,17 @@ type Service struct {
 	mu      sync.Mutex
 	waiters map[string][]chan *auth.Final
 	runs    sync.Map // run ID -> auth.Run; manifests never change
+	budget  map[string]*histogram
 }
 
 // New starts the admission and finalization queues; they stop with ctx.
 // Every committed final, whether from a proposal or a deadline, is handed to
 // the requests waiting on its transaction.
 func New(ctx context.Context, db *store.Store) *Service {
-	s := &Service{DB: db, waiters: map[string][]chan *auth.Final{}}
+	s := &Service{DB: db, waiters: map[string][]chan *auth.Final{}, budget: map[string]*histogram{}}
+	for mode := range targets {
+		s.budget[mode] = newHistogram(0.005, 0.01, 0.02, 0.035, 0.05, 0.08, 0.1, 0.25, 0.5, 1)
+	}
 	s.Admissions = NewQueue(ctx, 1024, db.Admit)
 	s.Finals = NewQueue(ctx, 1024, func(ctx context.Context, in []store.Choice) ([]store.Row, error) {
 		rows, err := db.Finalize(ctx, in)
@@ -124,6 +128,7 @@ func (s *Service) Handler() http.Handler {
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	m.HandleFunc("GET /metrics", s.metrics)
 	m.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		if !s.ConsumerReady.Load() || s.DB.DB.PingContext(r.Context()) != nil {
 			reply(w, http.StatusServiceUnavailable, map[string]string{"status": "recovering"})
@@ -204,11 +209,9 @@ func (s *Service) authorize(w http.ResponseWriter, r *http.Request) {
 		failure(w, http.StatusConflict, "RUN_CONFLICT")
 		return
 	}
-	budget := 50 * time.Millisecond
-	if run.Mode == "throughput" {
-		budget = 100 * time.Millisecond
-	}
-	ctx, cancel := context.WithDeadline(r.Context(), entered.Add(budget))
+	// Every answer from here on, including a missed budget, is observed.
+	defer func() { s.budget[run.Mode].observe(time.Since(entered).Seconds()) }()
+	ctx, cancel := context.WithDeadline(r.Context(), entered.Add(targets[run.Mode]))
 	defer cancel()
 	finals, stop := s.watch(e.TransactionID)
 	defer stop()

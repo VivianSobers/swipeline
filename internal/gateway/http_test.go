@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -243,5 +244,29 @@ func TestGatewayLiveness(t *testing.T) {
 	_ = s.DB.DB.Close()
 	if invoke(s, http.MethodGet, "/healthz", nil, "").Code != http.StatusOK {
 		t.Fatal("no liveness")
+	}
+}
+
+func TestBudgetMetrics(t *testing.T) {
+	s, run, e := service(t)
+	if err := s.DB.Register(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	authorizeHTTP(t, s, e)
+	w := invoke(s, http.MethodGet, "/metrics", nil, "")
+	if w.Code != http.StatusOK {
+		t.Fatal(w.Code)
+	}
+	for _, line := range []string{
+		`swipeline_gateway_budget_duration_seconds_count{deadline_mode="latency"} 1`,
+		`swipeline_gateway_budget_duration_seconds_count{deadline_mode="throughput"} 0`,
+		`swipeline_gateway_budget_duration_seconds_bucket{deadline_mode="latency",le="0.05"} `,
+		`swipeline_gateway_budget_duration_seconds_bucket{deadline_mode="latency",le="0.1"} `,
+		`swipeline_gateway_latency_target_seconds{deadline_mode="latency"} 0.05`,
+		`swipeline_gateway_latency_target_seconds{deadline_mode="throughput"} 0.1`,
+	} {
+		if !strings.Contains(w.Body.String(), line) {
+			t.Fatalf("missing %q in\n%s", line, w.Body.String())
+		}
 	}
 }
