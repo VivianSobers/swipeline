@@ -3,16 +3,20 @@ package tests
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
 type service struct {
-	Image      string   `json:"image"`
-	MemLimit   int64    `json:"mem_limit,string"`
-	Profiles   []string `json:"profiles"`
-	Privileged bool     `json:"privileged"`
-	Configs    []any    `json:"configs"`
-	Ports      []struct {
+	Image       string   `json:"image"`
+	MemLimit    int64    `json:"mem_limit,string"`
+	Profiles    []string `json:"profiles"`
+	Privileged  bool     `json:"privileged"`
+	Configs     []any    `json:"configs"`
+	Healthcheck struct {
+		Test []string `json:"test"`
+	} `json:"healthcheck"`
+	Ports []struct {
 		HostIP string `json:"host_ip"`
 	} `json:"ports"`
 	Volumes []struct {
@@ -55,6 +59,7 @@ func TestRenderedComposeBudgetsAndScope(t *testing.T) {
 		"replayer":   {"swipeline-replayer:m1", 256, true},
 		"prometheus": {"prom/prometheus:v3.15.0", 256, true},
 		"postgres":   {"postgres:17.11-bookworm", 512, false},
+		"kafka":      {"apache/kafka:4.3.1", 768, false},
 	}
 	if len(services) != len(expected) {
 		t.Fatalf("unexpected services: %v", services)
@@ -105,5 +110,14 @@ func TestRenderedBindMountsAreReadOnlyAndSELinuxShared(t *testing.T) {
 	}
 	if binds == 0 {
 		t.Fatal("no configuration is mounted")
+	}
+}
+
+// Kafka CLI tools inherit KAFKA_HEAP_OPTS. The broker's fixed 384m heap must
+// not be duplicated by every healthcheck JVM inside the same 768m budget.
+func TestRenderedKafkaHealthcheckHasOwnHeap(t *testing.T) {
+	test := rendered(t)["kafka"].Healthcheck.Test
+	if len(test) != 2 || test[0] != "CMD-SHELL" || !strings.HasPrefix(test[1], "KAFKA_HEAP_OPTS=-Xmx64m ") {
+		t.Fatalf("healthcheck: %q", test)
 	}
 }

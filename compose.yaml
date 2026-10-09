@@ -83,7 +83,44 @@ services:
       options:
         max-size: 5m
         max-file: "2"
+  kafka:
+    profiles: [core, full]
+    image: apache/kafka:4.3.1
+    mem_limit: 768m
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      KAFKA_HEAP_OPTS: -Xms384m -Xmx384m
+      LOG_DIR: /tmp/kafka-logs
+    entrypoint: [/bin/bash, -ec]
+    command:
+      - |
+        /opt/kafka/bin/kafka-storage.sh format --ignore-formatted --cluster-id MkU3OEVBNTcwNTJENDM2Qk --config /etc/kafka/swipeline.properties
+        exec /opt/kafka/bin/kafka-server-start.sh /etc/kafka/swipeline.properties
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+      - type: bind
+        source: ./deploy/kafka.properties
+        target: /etc/kafka/swipeline.properties
+        read_only: true
+        bind:
+          selinux: z
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    healthcheck:
+      test: [CMD-SHELL, "KAFKA_HEAP_OPTS=-Xmx64m /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list >/dev/null"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
 volumes:
   preview-data:
   prometheus-data:
   postgres-data:
+  kafka-data:
