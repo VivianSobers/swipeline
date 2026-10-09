@@ -65,4 +65,25 @@ private ObjectNode request(long at,long amount) throws Exception {
   assertArrayEquals(before,h);
  }
 }
+@Test public void merchantUnionAndExpiry() throws Exception {
+ ObjectNode s=Wire.empty(),n=null;
+ for(int i=0;i<80;i++){n=request(10000+i,100);n.put("card_token","card_"+i);n=Merchant.apply(s,n);}
+ assertTrue(n.path("merchant_distinct_estimate").asDouble()>65);
+ n=Merchant.apply(s,request(80000,100));assertEquals(1,n.path("merchant_distinct_estimate").asDouble(),0.1);
+ assertTrue(s.path("buckets").size()<=6);
+}
+
+@Test public void merchantUnionDeduplicatesAcrossBucketsAndHandlesLateness() throws Exception {
+ ObjectNode s=Wire.empty(),n=null;
+ for(int slot=0;slot<6;slot++)for(int i=0;i<80;i++) {
+  n=request(slot*10000L, i<64?200:201);n.put("card_token","card_"+i);n=Merchant.apply(s,n);
+ }
+ assertEquals(80,n.path("merchant_distinct_estimate").asDouble(),4.8);
+ assertEquals(480,n.path("merchant_attempts").asLong());assertEquals(384,n.path("merchant_small").asLong());
+ n=Merchant.apply(s,request(60000,200));assertEquals(401,n.path("merchant_attempts").asLong());assertEquals(6,s.path("buckets").size());
+ n=Merchant.apply(s,request(0,200));assertTrue(n.path("features_late").asBoolean());assertEquals(401,n.path("merchant_attempts").asLong());
+ n=Merchant.apply(s,request(10000,200));assertEquals(402,n.path("merchant_attempts").asLong());
+ ObjectNode restored=Wire.parse(s.toString());
+ assertEquals(Merchant.apply(s,request(70000,200)),Merchant.apply(restored,request(70000,200)));
+}
 }
