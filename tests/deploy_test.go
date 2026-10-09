@@ -57,12 +57,13 @@ func TestRenderedComposeBudgetsAndScope(t *testing.T) {
 		mib      int64
 		hostPort bool
 	}{
-		"replayer":         {"swipeline-replayer:m1", 256, true},
-		"prometheus":       {"prom/prometheus:v3.15.0", 256, true},
-		"postgres":         {"postgres:17.11-bookworm", 512, false},
-		"kafka":            {"apache/kafka:4.3.1", 768, false},
-		"gateway":          {"swipeline-gateway:m2", 256, true},
-		"flink-jobmanager": {"swipeline-streaming:m2", 512, true},
+		"replayer":          {"swipeline-replayer:m1", 256, true},
+		"prometheus":        {"prom/prometheus:v3.15.0", 256, true},
+		"postgres":          {"postgres:17.11-bookworm", 512, false},
+		"kafka":             {"apache/kafka:4.3.1", 768, false},
+		"gateway":           {"swipeline-gateway:m2", 256, true},
+		"flink-jobmanager":  {"swipeline-streaming:m2", 512, true},
+		"flink-taskmanager": {"swipeline-streaming:m2", 1536, false},
 	}
 	if len(services) != len(expected) {
 		t.Fatalf("unexpected services: %v", services)

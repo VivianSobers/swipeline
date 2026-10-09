@@ -188,6 +188,24 @@ services:
       options:
         max-size: 5m
         max-file: "2"
+  flink-taskmanager:
+    profiles: [core, full]
+    image: swipeline-streaming:m2
+    mem_limit: 1536m
+    command: [taskmanager]
+    environment:
+      KAFKA_BROKERS: kafka:9092
+    volumes:
+      - flink-state:/state
+    depends_on:
+      flink-jobmanager:
+        condition: service_started
+    restart: on-failure
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
 volumes:
   preview-data:
   prometheus-data:
