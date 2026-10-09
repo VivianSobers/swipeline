@@ -1,6 +1,6 @@
 services:
   replayer:
-    profiles: [core]
+    profiles: [core, full]
     image: swipeline-replayer:m1
     build:
       context: .
@@ -28,7 +28,7 @@ services:
         max-size: 5m
         max-file: "2"
   prometheus:
-    profiles: [core]
+    profiles: [core, full]
     image: prom/prometheus:v3.15.0
     mem_limit: 256m
     read_only: true
@@ -57,6 +57,33 @@ services:
       options:
         max-size: 5m
         max-file: "2"
+  postgres:
+    profiles: [core, full]
+    image: postgres:17.11-bookworm
+    mem_limit: 512m
+    security_opt: [no-new-privileges:true]
+    environment:
+      POSTGRES_PASSWORD: admin-local
+    command: [postgres, -c, shared_buffers=128MB, -c, max_connections=32, -c, synchronous_commit=on]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - type: bind
+        source: ./deploy/postgres-init.sql
+        target: /docker-entrypoint-initdb.d/001-gateway.sql
+        read_only: true
+        bind:
+          selinux: z
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U postgres -d gateway"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
 volumes:
   preview-data:
   prometheus-data:
+  postgres-data:
