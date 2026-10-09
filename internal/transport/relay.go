@@ -1,0 +1,98 @@
+package transport
+
+import (
+	"context"
+	"sync"
+
+	"github.com/VivianSobers/swipeline/internal/store"
+	"github.com/twmb/franz-go/pkg/kgo"
+)
+
+// Prefix is the length of the leading run of acknowledged records. Rows
+// after the first failure stay unsent so a lane is never reordered.
+func Prefix(ok []bool) int {
+	for i, v := range ok {
+		if !v {
+			return i
+		}
+	}
+	return len(ok)
+}
+
+type lane struct {
+	topic     string
+	partition int32
+}
+
+type item struct {
+	id     int64
+	record *kgo.Record
+}
+
+// RelayOnce sends up to 256 of the oldest unsent outbox rows, each lane (a
+// topic partition) in outbox order, waits for every acknowledgement, then
+// marks only each lane's acknowledged prefix sent, with its broker offset, in
+// one transaction. It returns how many rows it marked. There must be exactly
+// one relay per database.
+func RelayOnce(ctx context.Context, s *store.Store, p *kgo.Client) (int, error) {
+	rows, err := s.DB.QueryContext(ctx, "SELECT outbox_id, topic, key, partition, payload FROM outbox WHERE sent_at IS NULL ORDER BY outbox_id LIMIT 256")
+	if err != nil {
+		return 0, err
+	}
+	lanes := map[lane][]item{}
+	for rows.Next() {
+		var it item
+		it.record = &kgo.Record{}
+		if err = rows.Scan(&it.id, &it.record.Topic, &it.record.Key, &it.record.Partition, &it.record.Value); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		l := lane{it.record.Topic, it.record.Partition}
+		lanes[l] = append(lanes[l], it)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil || len(lanes) == 0 {
+		return 0, err
+	}
+	var mu sync.Mutex
+	var acked []item
+	var wg sync.WaitGroup
+	for _, batch := range lanes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok := make([]bool, len(batch))
+			var sent sync.WaitGroup
+			for i, it := range batch {
+				sent.Add(1)
+				p.Produce(ctx, it.record, func(_ *kgo.Record, err error) {
+					ok[i] = err == nil
+					sent.Done()
+				})
+			}
+			sent.Wait()
+			mu.Lock()
+			acked = append(acked, batch[:Prefix(ok)]...)
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if len(acked) == 0 {
+		return 0, ctx.Err()
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	for _, it := range acked {
+		if _, err = tx.ExecContext(ctx, "UPDATE outbox SET sent_at=clock_timestamp(), broker_offset=$2 WHERE outbox_id=$1 AND sent_at IS NULL", it.id, it.record.Offset); err != nil {
+			return 0, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(acked), nil
+}
