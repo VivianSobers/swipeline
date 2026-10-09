@@ -125,4 +125,26 @@ private ObjectNode request(long at,long amount) throws Exception {
  assertEquals(0,p.path("score").asInt());assertEquals(0,p.path("fraud_flags").size());
  assertEquals("STALE_REQUEST",p.path("reason").asText());assertEquals("DECLINE",p.path("decision").asText());assertEquals(before,n);
 }
+@Test public void gatewayIdGoldenValues() throws Exception {
+ assertEquals("52906ab0686d6fb4f6f95a89b153c9311607aa6cd4ad335195bc0d9e784862d0",Wire.id("tx","proposal"));
+ assertEquals("cbfd8f6a0cc82d1008e03fd1bf6cbb8c336a5c476143c86bd6619aa737cee122",Wire.id("a<b&c>","decision"));
+}
+@Test public void admittedRequestValidatesUnchanged() throws Exception {
+ ObjectNode n=Wire.parse(new String(getClass().getResourceAsStream("/request.json").readAllBytes(),java.nio.charset.StandardCharsets.UTF_8));
+ ObjectNode before=n.deepCopy();Wire.validate(n);assertEquals(before,n);
+ ObjectNode changed=n.deepCopy();changed.put("amount_minor",1956);assertThrows(IllegalArgumentException.class,()->Wire.validate(changed));
+ ObjectNode wrongId=n.deepCopy();wrongId.put("event_id","wrong");assertThrows(IllegalArgumentException.class,()->Wire.validate(wrongId));
+ ObjectNode missing=n.deepCopy();missing.remove("received_at_ms");assertThrows(IllegalArgumentException.class,()->Wire.validate(missing));
+ assertThrows(IllegalArgumentException.class,()->Wire.validate(Wire.parse("{\"schema_version\":2}")));
+}
+@Test public void quarantinePreservesSourceAndRedactsRawInput() throws Exception {
+ byte[] raw=new byte[]{(byte)0xff,0,38};
+ ObjectNode q=Wire.parse(Wire.quarantine(raw,2,17,"INVALID_REQUEST",1000));
+ assertEquals("swipeline.auth.requests.v1",q.path("origin_topic").asText());
+ assertEquals(2,Wire.integer(q,"partition"));assertEquals(17,Wire.integer(q,"offset"));
+ assertTrue(q.path("error_code").asText().matches("^[A-Z][A-Z_]{0,63}$"));
+ assertTrue(q.path("payload_hash").asText().matches("^[0-9a-f]{64}$"));
+ assertEquals(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(raw)),q.path("payload_hash").asText());
+ assertEquals("redacted",q.path("sanitized_input").asText());assertEquals(1000,Wire.integer(q,"detected_at_ms"));
+}
 }
