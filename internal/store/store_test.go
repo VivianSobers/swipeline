@@ -91,3 +91,68 @@ func TestRunConflict(t *testing.T) {
 		t.Fatal("invalid run accepted")
 	}
 }
+
+// sibling returns a new valid transaction for the same card as e.
+func sibling(t *testing.T, e contract.Event, name string) contract.Event {
+	t.Helper()
+	b := e.Business
+	b.TransactionID = contract.ID(e.TransactionID, name)
+	b.SourceSeq++
+	next, err := contract.New(b, e.ProducedAtMS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return next
+}
+
+func TestAdmissionOutboxAndRetry(t *testing.T) {
+	s := database(t)
+	_, e := fixture(t, s)
+	ctx := context.Background()
+	received := time.Now().UnixMilli()
+	rows, err := s.Admit(ctx, []Input{{Event: e, Received: received}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rows[0].Request
+	if rows[0].Final != nil || got.CardSeq != 1 || got.Received != received || got.Scoring != received+35 ||
+		got.Response != received+50 || got.Mode != "latency" || got.CloseDay != e.AuthorizationDate || got.Event != e {
+		t.Fatalf("receipt %+v", rows[0])
+	}
+	again, err := s.Admit(ctx, []Input{{Event: e, Received: received + 5000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again[0].Request != got {
+		t.Fatal("retry changed receipt")
+	}
+	var n, partition int
+	var topic string
+	err = s.DB.QueryRow("SELECT count(*), min(topic), min(partition) FROM outbox WHERE event_id=$1", e.EventID).Scan(&n, &topic, &partition)
+	if err != nil || n != 1 || topic != "swipeline.auth.requests.v1" || int32(partition) != auth.Partition(auth.Key(e.RunID, e.CardToken)) {
+		t.Fatal(n, topic, partition, err)
+	}
+	next, err := s.Admit(ctx, []Input{{Event: sibling(t, e, "second"), Received: received}})
+	if err != nil || next[0].Request.CardSeq != 2 {
+		t.Fatal("card sequence", next, err)
+	}
+	changed := e.Business
+	changed.AmountMinor++
+	conflict, err := contract.New(changed, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Admit(ctx, []Input{{Event: conflict, Received: received}}); err == nil {
+		t.Fatal("changed payload accepted")
+	}
+	stranger := e.Business
+	stranger.RunID = "unregistered"
+	stranger.TransactionID = contract.ID("unregistered")
+	orphan, err := contract.New(stranger, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Admit(ctx, []Input{{Event: orphan, Received: received}}); err == nil {
+		t.Fatal("unregistered run accepted")
+	}
+}

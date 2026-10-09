@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/VivianSobers/swipeline/internal/auth"
 	"github.com/VivianSobers/swipeline/internal/contract"
@@ -102,4 +103,80 @@ func (s *Store) Register(ctx context.Context, r auth.Run) error {
 		return ErrRunConflict
 	}
 	return nil
+}
+
+// Input is a client event with the gateway's admission wall time.
+type Input struct {
+	Event    contract.Event
+	Received int64
+}
+
+// Row is a stored authorization and its final outcome, nil while pending.
+type Row struct {
+	Request auth.Request `json:"request"`
+	Final   *auth.Final  `json:"final"`
+}
+
+// Lookup returns the stored authorization for a transaction ID.
+func (s *Store) Lookup(ctx context.Context, id string) (Row, error) {
+	var row Row
+	var data []byte
+	err := s.DB.QueryRowContext(ctx, `SELECT jsonb_build_object('request', request_json, 'final', final_json)
+		FROM authorizations WHERE transaction_id=$1`, id).Scan(&data)
+	if err != nil {
+		return row, err
+	}
+	return row, json.Unmarshal(data, &row)
+}
+
+// Admit durably stores up to 32 events with their request outbox rows in one
+// transaction. A retry returns the original receipt; a changed payload under
+// the same transaction ID fails the whole batch. One global admission lock
+// keeps per-card sequences in arrival order.
+func (s *Store) Admit(ctx context.Context, in []Input) ([]Row, error) {
+	if len(in) == 0 || len(in) > 32 {
+		return nil, errors.New("admission batch size must be 1..32")
+	}
+	payloads := make([][]byte, len(in))
+	ids := make([]string, len(in))
+	for i, v := range in {
+		if err := v.Event.Validate(); err != nil {
+			return nil, err
+		}
+		data, err := json.Marshal(v.Event)
+		if err != nil {
+			return nil, err
+		}
+		payloads[i], ids[i] = data, v.Event.TransactionID
+	}
+	sort.Strings(ids)
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(72002)"); err != nil {
+		return nil, err
+	}
+	// Lock existing rows in ID order, the same order Finalize uses.
+	for _, id := range ids {
+		if _, err = tx.ExecContext(ctx, "SELECT 1 FROM authorizations WHERE transaction_id=$1 FOR UPDATE", id); err != nil {
+			return nil, err
+		}
+	}
+	out := make([]Row, len(in))
+	for i, v := range in {
+		key := auth.Key(v.Event.RunID, v.Event.CardToken)
+		var result []byte
+		if err = tx.QueryRowContext(ctx, "SELECT admit($1, $2, $3, $4)", payloads[i], v.Received, key, auth.Partition(key)).Scan(&result); err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal(result, &out[i]); err != nil {
+			return nil, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
