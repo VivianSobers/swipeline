@@ -20,3 +20,6 @@ demo:
 m2-storage:
 	docker compose up -d --wait postgres kafka
 	docker compose exec -T kafka bash /opt/swipeline/topics.sh
+.PHONY: db-test
+db-test:
+	@set -eu; container=$$(docker compose ps -q postgres); test -n "$$container" || { echo "run make m2-storage first" >&2; exit 1; }; network=$$(docker inspect "$$container" --format '{{range $$k,$$v := .NetworkSettings.Networks}}{{$$k}}{{end}}'); docker run --rm --network "$$network" --user "$$(id -u):$$(id -g)" -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false -e SWIPELINE_DB='postgres://gateway:gateway-local@postgres:5432/gateway?sslmode=disable' -e SWIPELINE_KAFKA=kafka:9092 -v "$(CURDIR):/src:ro,z" -w /src $(GO_IMAGE) go test -race ./... -count=1
