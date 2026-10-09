@@ -22,6 +22,7 @@ type Service struct {
 	DB            *store.Store
 	Admissions    *Queue[store.Input]
 	Finals        *Queue[store.Choice]
+	Deadlines     *Queue[store.Choice]
 	ConsumerReady atomic.Bool
 	// Outbox receives a signal whenever new outbox rows commit.
 	Outbox chan struct{}
@@ -49,6 +50,7 @@ func New(ctx context.Context, db *store.Store) *Service {
 		return rows, err
 	})
 	s.Finals = NewQueue(ctx, 1024, s.finalize)
+	s.Deadlines = NewQueue(ctx, 1024, s.finalize)
 	return s
 }
 
@@ -268,7 +270,7 @@ func (s *Service) authorize(w http.ResponseWriter, r *http.Request) {
 			reply(w, http.StatusOK, f)
 			return
 		case <-timer.C:
-			row, err = s.Finals.Submit(ctx, store.Choice{ID: e.TransactionID}, time.Now())
+			row, err = s.Deadlines.Submit(ctx, store.Choice{ID: e.TransactionID}, time.Now())
 			if err != nil {
 				failure(w, http.StatusServiceUnavailable, "RETRY_SAME_ID")
 				return

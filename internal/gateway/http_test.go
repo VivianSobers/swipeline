@@ -314,3 +314,67 @@ func TestCommittedWorkWakesRelay(t *testing.T) {
 		t.Fatal("new final did not wake the relay")
 	}
 }
+
+// A blocked proposal must not consume the response budget of another request.
+func TestDeadlineBypassesBlockedProposal(t *testing.T) {
+	s, run, e := service(t)
+	ctx := context.Background()
+	if err := s.DB.Register(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	business := e.Business
+	business.TransactionID = contract.ID(e.TransactionID, "blocked")
+	blocked, err := contract.New(business, e.ProducedAtMS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.DB.Admit(ctx, []store.Input{{Event: blocked, Received: time.Now().UnixMilli()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.DB.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	var pid int
+	if err = tx.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	if err = tx.QueryRowContext(ctx, "SELECT transaction_id FROM authorizations WHERE transaction_id=$1 FOR UPDATE", blocked.TransactionID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	p := auth.Proposal{Request: rows[0].Request, ProposalID: contract.ID(id, "proposal"),
+		Decision: "APPROVE", Reason: "RULES_CLEAR", Flags: []string{}, Usual: 100, Scored: rows[0].Request.Received}
+	done := make(chan struct{})
+	defer func() {
+		_ = tx.Rollback()
+		<-done
+	}()
+	go func() {
+		defer close(done)
+		_, _ = s.Finals.Submit(ctx, store.Choice{ID: id, Proposal: &p}, time.Now())
+	}()
+	// Observe the actual database lock wait before starting the timed request.
+	until := time.Now().Add(time.Second)
+	for {
+		var waiting bool
+		if err = s.DB.DB.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))", pid).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(until) {
+			t.Fatal("proposal worker did not block on the held row lock")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	w := invoke(s, http.MethodPost, "/v1/authorizations", e, e.TransactionID)
+	var f auth.Final
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &f) != nil ||
+		f.Source != "STAND_IN" || f.Reason != "SCORING_TIMEOUT" {
+		t.Fatalf("deadline behind blocked proposal: HTTP %d %s", w.Code, w.Body.String())
+	}
+}
