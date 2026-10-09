@@ -41,10 +41,13 @@ services:
       - --storage.tsdb.retention.size=256MB
     ports:
       - "127.0.0.1:${SWIPELINE_PROM_PORT:-9090}:9090"
-    configs:
-      - source: prometheus-config
-        target: /etc/prometheus/prometheus.yml
     volumes:
+      - type: bind
+        source: ./deploy/prometheus.yml
+        target: /etc/prometheus/prometheus.yml
+        read_only: true
+        bind:
+          selinux: z
       - prometheus-data:/prometheus
     depends_on:
       replayer:
@@ -54,9 +57,6 @@ services:
       options:
         max-size: 5m
         max-file: "2"
-configs:
-  prometheus-config:
-    file: ./deploy/prometheus.yml
 volumes:
   preview-data:
   prometheus-data:

@@ -11,7 +11,7 @@ build:
 	$(GO_RUN) go build ./...
 .PHONY: deploy-check
 deploy-check:
-	@set -eu; config_file=$$(mktemp); trap 'rm -f "$$config_file"' EXIT; docker compose --profile core config --format json > "$$config_file"; docker run --rm --user "$$(id -u):$$(id -g)" -e GOCACHE=/tmp/go-cache -e GOFLAGS=-buildvcs=false -e SWIPELINE_COMPOSE_JSON=/compose.json -v "$(CURDIR):/src:ro" -v "$$config_file:/compose.json:ro" -w /src $(GO_IMAGE) go test ./tests -run TestRenderedComposeBudgetsAndScope -v
+	@set -eu; config_file=$$(mktemp); trap 'rm -f "$$config_file"' EXIT; docker compose --profile core config --format json > "$$config_file"; docker run --rm --user "$$(id -u):$$(id -g)" -e GOCACHE=/tmp/go-cache -e GOFLAGS=-buildvcs=false -e SWIPELINE_COMPOSE_JSON=/compose.json -v "$(CURDIR):/src:ro" -v "$$config_file:/compose.json:ro" -w /src $(GO_IMAGE) go test ./tests -run TestRendered -v
 	docker compose run --rm --no-deps --entrypoint /bin/promtool prometheus check config /etc/prometheus/prometheus.yml
 .PHONY: demo
 demo:

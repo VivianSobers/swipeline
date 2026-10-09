@@ -53,3 +53,46 @@ func TestRenderedComposeBudgetsAndScope(t *testing.T) {
 		t.Fatal("pin changed")
 	}
 }
+
+// Fedora hosts can run Docker with SELinux enforcement, where an unlabelled
+// bind mount of a file from the checkout is denied. The shared z label is a
+// no-op on hosts without SELinux.
+func TestRenderedPrometheusConfigIsSELinuxShared(t *testing.T) {
+	path := os.Getenv("SWIPELINE_COMPOSE_JSON")
+	if path == "" {
+		t.Skip("run make deploy-check")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Services map[string]struct {
+			Configs []any `json:"configs"`
+			Volumes []struct {
+				Type     string `json:"type"`
+				Target   string `json:"target"`
+				ReadOnly bool   `json:"read_only"`
+				Bind     struct {
+					SELinux string `json:"selinux"`
+				} `json:"bind"`
+			} `json:"volumes"`
+		} `json:"services"`
+	}
+	if err = json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	prometheus := doc.Services["prometheus"]
+	if len(prometheus.Configs) != 0 {
+		t.Fatal("configs entries cannot carry an SELinux label")
+	}
+	for _, v := range prometheus.Volumes {
+		if v.Target == "/etc/prometheus/prometheus.yml" {
+			if v.Type != "bind" || !v.ReadOnly || v.Bind.SELinux != "z" {
+				t.Fatalf("config mount must be a read-only bind with z label: %+v", v)
+			}
+			return
+		}
+	}
+	t.Fatal("prometheus configuration is not mounted")
+}
