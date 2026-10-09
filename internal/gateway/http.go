@@ -28,6 +28,7 @@ type Service struct {
 	waiters map[string][]chan *auth.Final
 	runs    sync.Map // run ID -> auth.Run; manifests never change
 	budget  map[string]*histogram
+	counts  counters
 }
 
 // New starts the admission and finalization queues; they stop with ctx.
@@ -39,14 +40,24 @@ func New(ctx context.Context, db *store.Store) *Service {
 		s.budget[mode] = newHistogram(0.005, 0.01, 0.02, 0.035, 0.05, 0.08, 0.1, 0.25, 0.5, 1)
 	}
 	s.Admissions = NewQueue(ctx, 1024, db.Admit)
-	s.Finals = NewQueue(ctx, 1024, func(ctx context.Context, in []store.Choice) ([]store.Row, error) {
-		rows, err := db.Finalize(ctx, in)
-		if err == nil {
-			s.deliver(rows)
-		}
-		return rows, err
-	})
+	s.Finals = NewQueue(ctx, 1024, s.finalize)
 	return s
+}
+
+// finalize commits choices, counts each newly committed final once and
+// hands finals to waiting requests.
+func (s *Service) finalize(ctx context.Context, in []store.Choice) ([]store.Row, error) {
+	rows, err := s.DB.Finalize(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		if r.Fresh {
+			s.counts.add(r.Final)
+		}
+	}
+	s.deliver(rows)
+	return rows, nil
 }
 
 // watch registers interest in id's final until the returned func is called.

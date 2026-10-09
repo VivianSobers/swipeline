@@ -7,12 +7,56 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/VivianSobers/swipeline/internal/auth"
 )
 
 // targets are the fixed response budgets, from entry to reply, per mode.
 var targets = map[string]time.Duration{"latency": 50 * time.Millisecond, "throughput": 100 * time.Millisecond}
 
 var modes = []string{"latency", "throughput"}
+
+var (
+	sources        = []string{"FLINK", "STAND_IN"}
+	decisions      = []string{"APPROVE", "DECLINE"}
+	standInReasons = []string{"SCORING_TIMEOUT", "SCORING_UNAVAILABLE", "NETWORK_UNAVAILABLE"}
+)
+
+// counters holds per-process decision counts with bounded label values.
+type counters struct {
+	mu       sync.Mutex
+	finals   map[[2]string]uint64 // source, decision
+	standIns map[string]uint64    // reason
+}
+
+func (c *counters) add(f *auth.Final) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.finals == nil {
+		c.finals, c.standIns = map[[2]string]uint64{}, map[string]uint64{}
+	}
+	c.finals[[2]string{f.Source, f.Decision}]++
+	if f.Source == "STAND_IN" {
+		c.standIns[f.Reason]++
+	}
+}
+
+func (c *counters) write(w io.Writer) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fmt.Fprintln(w, "# HELP swipeline_gateway_final_decisions_total Final outcomes committed by this process.")
+	fmt.Fprintln(w, "# TYPE swipeline_gateway_final_decisions_total counter")
+	for _, source := range sources {
+		for _, decision := range decisions {
+			fmt.Fprintf(w, "swipeline_gateway_final_decisions_total{decision_source=%q,decision=%q} %d\n", source, decision, c.finals[[2]string{source, decision}])
+		}
+	}
+	fmt.Fprintln(w, "# HELP swipeline_gateway_standin_total Fail-closed stand-in declines committed by this process.")
+	fmt.Fprintln(w, "# TYPE swipeline_gateway_standin_total counter")
+	for _, reason := range standInReasons {
+		fmt.Fprintf(w, "swipeline_gateway_standin_total{reason=%q} %d\n", reason, c.standIns[reason])
+	}
+}
 
 // histogram is a fixed-bucket Prometheus histogram, safe for concurrent use.
 // Bucket bounds are inclusive upper limits.
@@ -68,4 +112,5 @@ func (s *Service) metrics(w http.ResponseWriter, r *http.Request) {
 	for _, mode := range modes {
 		fmt.Fprintf(w, "swipeline_gateway_latency_target_seconds{deadline_mode=%q} %g\n", mode, targets[mode].Seconds())
 	}
+	s.counts.write(w)
 }

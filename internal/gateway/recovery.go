@@ -10,9 +10,9 @@ import (
 // deadline passed without a final, page by page until none remain. It runs
 // at startup and periodically, so a crash or a client that disconnected
 // never leaves an authorization pending.
-func Recover(ctx context.Context, s *store.Store) error {
+func (s *Service) Recover(ctx context.Context) error {
 	for {
-		rows, err := s.Pending(ctx)
+		rows, err := s.DB.Pending(ctx)
 		if err != nil || len(rows) == 0 {
 			return err
 		}
@@ -20,7 +20,7 @@ func Recover(ctx context.Context, s *store.Store) error {
 		for i, r := range rows {
 			in[i] = store.Choice{ID: r.Request.TransactionID}
 		}
-		if _, err = s.Finalize(ctx, in); err != nil {
+		if _, err = s.finalize(ctx, in); err != nil {
 			return err
 		}
 	}
