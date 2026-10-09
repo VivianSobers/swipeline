@@ -10,8 +10,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/VivianSobers/swipeline/internal/auth"
+	"github.com/VivianSobers/swipeline/internal/contract"
 )
 
 // Client calls one gateway.
@@ -56,4 +58,43 @@ func (c *Client) Register(ctx context.Context, r auth.Run) error {
 		return fmt.Errorf("register HTTP %d: %s", status, body)
 	}
 	return nil
+}
+
+// Send authorizes e and returns its durable final. A busy or uncertain
+// answer (429, 503, transport error) is followed by a status query under the
+// same ID, then a resubmission with the same ID after a backoff; a request is
+// never re-sent under a new identity. Other statuses are errors.
+func (c *Client) Send(ctx context.Context, e contract.Event) (auth.Final, error) {
+	decode := func(b []byte) (auth.Final, error) {
+		var f auth.Final
+		err := json.Unmarshal(b, &f)
+		if err == nil && (f.TransactionID != e.TransactionID || f.DecisionID == "" || (f.Decision != "APPROVE" && f.Decision != "DECLINE")) {
+			err = fmt.Errorf("invalid final for %s", e.TransactionID)
+		}
+		return f, err
+	}
+	for attempt := 0; attempt < 6; attempt++ {
+		status, body, err := c.call(ctx, http.MethodPost, "/v1/authorizations", e.TransactionID, e)
+		if err == nil && status == http.StatusOK {
+			return decode(body)
+		}
+		if err == nil && status != http.StatusTooManyRequests && status != http.StatusServiceUnavailable {
+			return auth.Final{}, fmt.Errorf("authorization HTTP %d: %s", status, body)
+		}
+		status, body, err = c.call(ctx, http.MethodGet, "/v1/authorizations/"+e.TransactionID, "", nil)
+		if err == nil && status == http.StatusOK {
+			return decode(body)
+		}
+		if err == nil && status != http.StatusAccepted && status != http.StatusNotFound && status != http.StatusServiceUnavailable {
+			return auth.Final{}, fmt.Errorf("status HTTP %d: %s", status, body)
+		}
+		delay := time.NewTimer(time.Duration(10<<attempt) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			delay.Stop()
+			return auth.Final{}, ctx.Err()
+		case <-delay.C:
+		}
+	}
+	return auth.Final{}, fmt.Errorf("unresolved authorization %s: rerun the same run to resume", e.TransactionID)
 }
