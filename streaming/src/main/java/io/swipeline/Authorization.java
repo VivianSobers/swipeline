@@ -54,7 +54,7 @@ public final class Authorization {
  public static StreamExecutionEnvironment build(Configuration cfg,String brokers,int parallelism){
   if(parallelism<1||parallelism>4)throw new IllegalArgumentException("parallelism 1..4");
   cfg.setString("execution.buffer-timeout.enabled","true");cfg.setString("execution.buffer-timeout.interval","0 ms");
-  cfg.setString("execution.checkpointing.interval","2 s");cfg.setString("execution.checkpointing.mode","EXACTLY_ONCE");
+  cfg.setString("execution.checkpointing.interval","10 s");cfg.setString("execution.checkpointing.mode","EXACTLY_ONCE");
   cfg.setString("execution.checkpointing.timeout","60 s");
   cfg.setString("execution.checkpointing.externalized-checkpoint-retention","RETAIN_ON_CANCELLATION");
   cfg.setString("state.backend.type","rocksdb");cfg.setString("state.backend.incremental","true");

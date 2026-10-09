@@ -6,6 +6,7 @@ import org.apache.flink.configuration.Configuration;
 public class GraphTest {
  @Test public void effectiveReplyGraph() throws Exception {
   var env=Authorization.build(new Configuration(),"kafka:9092",2);
+  assertEquals(10000L,env.getCheckpointConfig().getCheckpointInterval());
   var graph=env.getStreamGraph();var uids=new HashSet<String>();
   for(var n:graph.getStreamNodes()){
    if(n.getTransformationUID()!=null)uids.add(n.getTransformationUID());

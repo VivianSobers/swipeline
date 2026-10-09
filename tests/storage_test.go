@@ -138,7 +138,7 @@ func TestFlinkProcessConfig(t *testing.T) {
 	for key, want := range map[string]string{
 		"execution.buffer-timeout.enabled":     "true",
 		"execution.buffer-timeout.interval":    "0 ms",
-		"execution.checkpointing.interval":     "2 s",
+		"execution.checkpointing.interval":     "10 s",
 		"jobmanager.memory.process.size":       "448m",
 		"jobmanager.memory.jvm-metaspace.size": "128m",
 		"jobmanager.memory.jvm-overhead.min":   "64m",
