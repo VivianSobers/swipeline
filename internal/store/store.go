@@ -7,8 +7,12 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/json"
+	"errors"
 	"fmt"
 
+	"github.com/VivianSobers/swipeline/internal/auth"
+	"github.com/VivianSobers/swipeline/internal/contract"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -71,4 +75,31 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// ErrRunConflict means a run ID was reused with a different manifest.
+var ErrRunConflict = errors.New("run conflict")
+
+// Register records r's manifest. Registering an identical manifest again is
+// a no-op; any change under the same run ID is rejected.
+func (s *Store) Register(ctx context.Context, r auth.Run) error {
+	if err := r.Validate(); err != nil {
+		return err
+	}
+	manifest, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	result, err := s.DB.ExecContext(ctx, `INSERT INTO runs(run_id, config_json, config_hash) VALUES($1, $2, $3)
+		ON CONFLICT(run_id) DO UPDATE SET config_json=runs.config_json WHERE runs.config_hash=excluded.config_hash`,
+		r.ID, manifest, contract.ID(string(manifest)))
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return ErrRunConflict
+	}
+	return nil
 }
