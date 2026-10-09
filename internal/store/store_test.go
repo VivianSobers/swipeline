@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
@@ -183,5 +184,94 @@ func TestOutboxPressureStopsAdmission(t *testing.T) {
 	}
 	if _, err := s.Lookup(ctx, next.TransactionID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("rejected admission left a row: %v", err)
+	}
+}
+
+func admitAt(t *testing.T, s *Store, e contract.Event, received time.Time) auth.Request {
+	t.Helper()
+	rows, err := s.Admit(context.Background(), []Input{{Event: e, Received: received.UnixMilli()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows[0].Request
+}
+
+func approval(r auth.Request) *auth.Proposal {
+	return &auth.Proposal{Request: r, ProposalID: contract.ID(r.TransactionID, "proposal"), Decision: "APPROVE", Reason: "RULES_CLEAR",
+		Flags: []string{}, Score: 0, Velocity: 1, Usual: 100, Ratio: 1, Distinct: 1, Scored: r.Received}
+}
+
+func finalize(t *testing.T, s *Store, c Choice) Row {
+	t.Helper()
+	rows, err := s.Finalize(context.Background(), []Choice{c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows[0]
+}
+
+func TestLateProposalCannotWin(t *testing.T) {
+	s := database(t)
+	_, e := fixture(t, s)
+	r := admitAt(t, s, e, time.Now().Add(-time.Second))
+	got := finalize(t, s, Choice{ID: e.TransactionID, Proposal: approval(r)})
+	f := got.Final
+	if f == nil || f.Source != "STAND_IN" || f.Decision != "DECLINE" || f.Reason != "SCORING_TIMEOUT" || len(f.Flags) != 0 ||
+		f.ProposalID != nil || f.Score != nil || f.Late != nil || f.DecisionID != contract.ID(e.TransactionID, "decision") ||
+		f.Request != r || f.Latency < 1000 {
+		t.Fatalf("%+v", got)
+	}
+	again := finalize(t, s, Choice{ID: e.TransactionID, Proposal: approval(r)})
+	a, _ := json.Marshal(got)
+	b, _ := json.Marshal(again)
+	if string(a) != string(b) {
+		t.Fatal("final changed")
+	}
+	var n int
+	if err := s.DB.QueryRow("SELECT count(*) FROM outbox WHERE event_id=$1 AND topic='swipeline.decisions.raw.v1'", f.DecisionID).Scan(&n); err != nil || n != 1 {
+		t.Fatal("decision outbox", n, err)
+	}
+}
+
+func TestTimelyProposalWinsOnce(t *testing.T) {
+	s := database(t)
+	_, e := fixture(t, s)
+	r := admitAt(t, s, e, time.Now().Add(time.Minute))
+	if row := finalize(t, s, Choice{ID: e.TransactionID}); row.Final != nil {
+		t.Fatal("timer finalized before the scoring deadline")
+	}
+	p := approval(r)
+	got := finalize(t, s, Choice{ID: e.TransactionID, Proposal: p})
+	f := got.Final
+	if f == nil || f.Source != "FLINK" || f.Decision != "APPROVE" || f.Reason != "RULES_CLEAR" || f.ProposalID == nil ||
+		*f.ProposalID != p.ProposalID || f.Usual == nil || *f.Usual != 100 || f.Late == nil || *f.Late || f.Latency != 0 {
+		t.Fatalf("%+v", f)
+	}
+	decline := approval(r)
+	decline.Decision, decline.ProposalID = "DECLINE", "second"
+	if again := finalize(t, s, Choice{ID: e.TransactionID, Proposal: decline}); again.Final.Decision != "APPROVE" {
+		t.Fatal("second proposal replaced the final")
+	}
+}
+
+func TestForeignProposalRejected(t *testing.T) {
+	s := database(t)
+	_, e := fixture(t, s)
+	r := admitAt(t, s, e, time.Now().Add(time.Minute))
+	for name, mutate := range map[string]func(*auth.Proposal){
+		"payload":  func(p *auth.Proposal) { p.PayloadHash = contract.ID("other") },
+		"rule":     func(p *auth.Proposal) { p.RuleVersion = "rules-v9" },
+		"decision": func(p *auth.Proposal) { p.Decision = "REVIEW" },
+		"flags":    func(p *auth.Proposal) { p.Flags = nil },
+		"id":       func(p *auth.Proposal) { p.ProposalID = "" },
+	} {
+		p := approval(r)
+		mutate(p)
+		if _, err := s.Finalize(context.Background(), []Choice{{ID: e.TransactionID, Proposal: p}}); err == nil {
+			t.Fatalf("%s mismatch accepted", name)
+		}
+	}
+	if row, err := s.Lookup(context.Background(), e.TransactionID); err != nil || row.Final != nil {
+		t.Fatal("rejected proposal changed the row", row, err)
 	}
 }

@@ -213,3 +213,59 @@ func (s *Store) Full(ctx context.Context, rows, bytes int64) bool {
 	err := s.DB.QueryRowContext(ctx, pressureSQL, rows, bytes).Scan(&full)
 	return err != nil || full
 }
+
+// Choice asks for the final outcome of transaction ID. A nil Proposal is the
+// deadline timer: it finalizes a stand-in only once the deadline has passed.
+type Choice struct {
+	ID       string
+	Proposal *auth.Proposal
+}
+
+// Finalize arbitrates up to 32 choices in one transaction, locking rows in
+// ID order. Rows still before their deadline without a proposal come back
+// with a nil Final. A commit error is returned as is: the outcome is then
+// unknown and must be read back, never guessed.
+func (s *Store) Finalize(ctx context.Context, in []Choice) ([]Row, error) {
+	if len(in) == 0 || len(in) > 32 {
+		return nil, errors.New("final batch size must be 1..32")
+	}
+	proposals := make([]any, len(in))
+	for i, c := range in {
+		if p := c.Proposal; p != nil {
+			if p.ProposalID == "" || p.Flags == nil || (p.Decision != "APPROVE" && p.Decision != "DECLINE") {
+				return nil, errors.New("malformed proposal")
+			}
+			data, err := json.Marshal(p)
+			if err != nil {
+				return nil, err
+			}
+			proposals[i] = data
+		}
+	}
+	order := make([]int, len(in))
+	for i := range in {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return in[order[a]].ID < in[order[b]].ID })
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	out := make([]Row, len(in))
+	for _, i := range order {
+		id := in[i].ID
+		var result []byte
+		err = tx.QueryRowContext(ctx, "SELECT finalize($1, $2, $3, $4)", id, proposals[i], contract.ID(id, "decision"), auth.Partition([]byte(id))).Scan(&result)
+		if err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal(result, &out[i]); err != nil {
+			return nil, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
