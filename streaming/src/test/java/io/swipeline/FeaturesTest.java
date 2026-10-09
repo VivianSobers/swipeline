@@ -31,4 +31,30 @@ private ObjectNode request(long at,long amount) throws Exception {
  for(int i=62;i<200;i++)Card.apply(s,request(i*1000L,1));
  assertEquals(60,s.path("buckets").size());
 }
+@Test public void baselineExcludesCurrentAndPoison() throws Exception {
+ ObjectNode s=Wire.empty();
+ for(int i=0;i<10;i++)Card.apply(s,request(i*61000L,1000));
+ ObjectNode n=Card.apply(s,request(610000,50000));
+ assertEquals(1000,n.path("usual_minor").asLong());assertTrue(n.path("spend_anomaly").asBoolean());
+ assertEquals(10,s.path("history").size());
+}
+@Test public void exactOverflowIsRejected() throws Exception {
+ ObjectNode s=Wire.empty();Card.apply(s,request(1000,Long.MAX_VALUE));
+ try {Card.apply(s,request(1001,1));fail();}catch(ArithmeticException expected){}
+}
+
+@Test public void baselineDefaultsBoundsAndVelocityEligibility() throws Exception {
+ for(String mcc:new String[]{"5411","5812","5541","5732"}) {
+  ObjectNode n=request(0,100);n.put("mcc",mcc);
+  long expected=switch(mcc){case "5812"->2200;case "5541"->6000;case "5732"->40000;default->3500;};
+  assertEquals(expected,Card.apply(Wire.empty(),n).path("usual_minor").asLong());
+ }
+ ObjectNode s=Wire.empty();for(int i=0;i<110;i++)Card.apply(s,request(i*61000L,i<10?1000:2000));
+ assertEquals(100,s.path("history").size());
+ assertEquals(2000,Card.apply(s,request(110*61000L,2000)).path("usual_minor").asLong());
+ s=Wire.empty();for(int i=0;i<6;i++)Card.apply(s,request(i,100));assertEquals(5,s.path("history").size());
+ s=Wire.empty();for(int i=0;i<10;i++)Card.apply(s,request(i*61000L,1));
+ assertEquals(100,Card.apply(s,request(610000,10000)).path("usual_minor").asLong());
+ assertFalse(Card.apply(s,request(671000,10000)).path("spend_anomaly").asBoolean());
+}
 }
