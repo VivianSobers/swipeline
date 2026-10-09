@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -154,5 +156,32 @@ func TestAdmissionOutboxAndRetry(t *testing.T) {
 	}
 	if _, err = s.Admit(ctx, []Input{{Event: orphan, Received: received}}); err == nil {
 		t.Fatal("unregistered run accepted")
+	}
+}
+
+func TestOutboxPressureStopsAdmission(t *testing.T) {
+	s := database(t)
+	_, e := fixture(t, s)
+	ctx := context.Background()
+	if _, err := s.Admit(ctx, []Input{{Event: e, Received: time.Now().UnixMilli()}}); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Full(ctx, 0, 0) {
+		t.Fatal("cap ignored")
+	}
+	if s.Full(ctx, 1<<40, 1<<40) {
+		t.Fatal("false pressure")
+	}
+	var backlog int64
+	if err := s.DB.QueryRow("SELECT (SELECT count(*) FROM outbox WHERE sent_at IS NULL) + (SELECT count(*) FROM authorizations WHERE status='PENDING')").Scan(&backlog); err != nil {
+		t.Fatal(err)
+	}
+	s.MaxRows = backlog + 1 // one more admission needs two rows of headroom
+	next := sibling(t, e, "pressured")
+	if _, err := s.Admit(ctx, []Input{{Event: next, Received: time.Now().UnixMilli()}}); !errors.Is(err, ErrFull) {
+		t.Fatalf("admitted under pressure: %v", err)
+	}
+	if _, err := s.Lookup(ctx, next.TransactionID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("rejected admission left a row: %v", err)
 	}
 }

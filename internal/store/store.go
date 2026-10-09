@@ -17,8 +17,14 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// Store is a bounded connection pool to the gateway database.
-type Store struct{ DB *sql.DB }
+// Store is a bounded connection pool to the gateway database. MaxRows and
+// MaxBytes cap the unsent outbox plus the final rows reserved for pending
+// authorizations; admission stops before either is reached.
+type Store struct {
+	DB       *sql.DB
+	MaxRows  int64
+	MaxBytes int64
+}
 
 // Open connects to dsn with at most 12 connections, within the server's 32.
 func Open(ctx context.Context, dsn string) (*Store, error) {
@@ -32,7 +38,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	return &Store{DB: db}, nil
+	return &Store{DB: db, MaxRows: 100000, MaxBytes: 512 << 20}, nil
 }
 
 //go:embed migrations/*.sql
@@ -158,6 +164,14 @@ func (s *Store) Admit(ctx context.Context, in []Input) ([]Row, error) {
 	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(72002)"); err != nil {
 		return nil, err
 	}
+	// Each admission adds a request outbox row now and reserves one final.
+	var full bool
+	if err = tx.QueryRowContext(ctx, pressureSQL, s.MaxRows-2*int64(len(in)), s.MaxBytes-2*reserve*int64(len(in))).Scan(&full); err != nil {
+		return nil, err
+	}
+	if full {
+		return nil, ErrFull
+	}
 	// Lock existing rows in ID order, the same order Finalize uses.
 	for _, id := range ids {
 		if _, err = tx.ExecContext(ctx, "SELECT 1 FROM authorizations WHERE transaction_id=$1 FOR UPDATE", id); err != nil {
@@ -179,4 +193,23 @@ func (s *Store) Admit(ctx context.Context, in []Input) ([]Row, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// ErrFull means admission stopped so pending finals can still be written.
+var ErrFull = errors.New("outbox full")
+
+// reserve is the byte budget held back for one outbox payload.
+const reserve = 8192
+
+const pressureSQL = `SELECT
+	(SELECT count(*) FROM outbox WHERE sent_at IS NULL) + (SELECT count(*) FROM authorizations WHERE status='PENDING') >= $1
+	OR (SELECT coalesce(sum(pg_column_size(payload)), 0) FROM outbox WHERE sent_at IS NULL)
+	+ (SELECT count(*) * 8192 FROM authorizations WHERE status='PENDING') >= $2`
+
+// Full reports whether the backlog has reached rows or bytes. It fails closed:
+// a query error reports full.
+func (s *Store) Full(ctx context.Context, rows, bytes int64) bool {
+	var full bool
+	err := s.DB.QueryRowContext(ctx, pressureSQL, rows, bytes).Scan(&full)
+	return err != nil || full
 }
