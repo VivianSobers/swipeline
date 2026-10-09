@@ -3,3 +3,5 @@
 !cmd
 !internal
 !go.sum
+!streaming
+!deploy
