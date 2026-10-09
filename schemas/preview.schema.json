@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:swipeline:preview:v1",
-  "allOf": [{"$ref": "common.schema.json"}],
+  "allOf": [{"$ref": "urn:swipeline:common:v1"}],
   "type": "object",
   "required": ["card_token", "merchant_id", "mcc", "issuer_bank_id", "acquirer_bank_id", "currency", "amount_minor", "authorization_date", "rule_version", "reference_version"],
   "properties": {
