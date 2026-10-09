@@ -20,6 +20,14 @@ public class GraphTest {
   assertEquals("true",Authorization.producer().getProperty("enable.idempotence"));
   assertEquals("all",Authorization.producer().getProperty("acks"));
  }
+ @Test public void restoredGraphDoesNotClaimCheckpoint() throws Exception {
+  var cfg=new Configuration();
+  cfg.setString("execution.state-recovery.path","file:///state/checkpoints/old/chk-1");
+  cfg.setString("execution.state-recovery.claim-mode","CLAIM");
+  var graph=Authorization.build(cfg,"kafka:9092",2).getStreamGraph().getJobGraph();
+  assertEquals("file:///state/checkpoints/old/chk-1",graph.getSavepointRestoreSettings().getRestorePath());
+  assertEquals(org.apache.flink.core.execution.RecoveryClaimMode.NO_CLAIM,graph.getSavepointRestoreSettings().getRecoveryClaimMode());
+ }
  @Test public void parallelismIsBounded() {
   assertThrows(IllegalArgumentException.class,()->Authorization.build(new Configuration(),"kafka:9092",5));
   assertThrows(IllegalArgumentException.class,()->Authorization.build(new Configuration(),"kafka:9092",0));

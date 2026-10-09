@@ -56,6 +56,8 @@ public final class Authorization {
   cfg.setString("execution.buffer-timeout.enabled","true");cfg.setString("execution.buffer-timeout.interval","0 ms");
   cfg.setString("execution.checkpointing.interval","10 s");cfg.setString("execution.checkpointing.mode","EXACTLY_ONCE");
   cfg.setString("execution.checkpointing.timeout","60 s");
+  // Standalone 2.2.1 exposes the restore path but no claim-mode CLI option.
+  cfg.setString("execution.state-recovery.claim-mode","NO_CLAIM");
   cfg.setString("execution.checkpointing.externalized-checkpoint-retention","RETAIN_ON_CANCELLATION");
   cfg.setString("state.backend.type","rocksdb");cfg.setString("state.backend.incremental","true");
   var env=StreamExecutionEnvironment.getExecutionEnvironment(cfg);

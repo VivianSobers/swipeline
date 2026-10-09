@@ -171,6 +171,7 @@ services:
       context: .
       dockerfile: deploy/streaming.Dockerfile
     mem_limit: 512m
+    entrypoint: [sh, /opt/swipeline/flink-start.sh]
     command: [standalone-job, --job-classname, io.swipeline.Authorization]
     environment:
       KAFKA_BROKERS: kafka:9092
