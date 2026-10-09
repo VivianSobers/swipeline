@@ -92,3 +92,31 @@ func TestConfigAndOrdinalBounds(t *testing.T) {
 		}
 	}
 }
+
+// Replays send events in ordinal order, and the streaming job keeps
+// business-time windows behind a per-key frontier. Bursts placed earlier in
+// the day than their neighbours would arrive late and never be detected.
+func TestEventTimeFollowsOrdinalOrderIncludingBursts(t *testing.T) {
+	for _, events := range []int64{1000, 6000, 100000} {
+		g, err := New(Config{RunID: "order", Seed: 42, Day: "2026-10-08", Events: events})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var previous int64
+		for i := int64(0); i < events; i++ {
+			e, err := g.At(i, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if e.EventTimeMS < previous {
+				t.Fatalf("events=%d ordinal %d goes back in time", events, i)
+			}
+			previous = e.EventTimeMS
+		}
+		first, _ := g.At(900, 1)
+		last, _ := g.At(979, 1)
+		if last.EventTimeMS-first.EventTimeMS >= 60000 || first.MerchantID != "merchant-000" {
+			t.Fatalf("events=%d card-testing burst does not fit one merchant window", events)
+		}
+	}
+}

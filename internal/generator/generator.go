@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	Version   = "synthetic-v1"
+	Version   = "synthetic-v2"
 	Rules     = "preview-rules-v1"
 	Reference = "synthetic-reference-v1"
 )
@@ -65,6 +65,20 @@ func (g *Generator) choice(i int64, field string) uint64 {
 	return binary.BigEndian.Uint64(sum[:8])
 }
 
+// offset maps ordinal i to milliseconds into the day: 10% of traffic falls
+// in 00:00-06:00, 70% in 06:00-18:00 and 20% in 18:00-24:00. It never
+// decreases with i and does not depend on replay TPS.
+func (g *Generator) offset(i int64) int64 {
+	position := i * 1000000 / g.cfg.Events
+	if position < 100000 {
+		return position * 21600000 / 100000
+	}
+	if position < 800000 {
+		return 21600000 + (position-100000)*43200000/700000
+	}
+	return 64800000 + (position-800000)*21600000/200000
+}
+
 // At returns the event at ordinal i. producedAtMS is transport time only.
 func (g *Generator) At(i int64, produced int64) (contract.Event, error) {
 	if i < 0 || i >= g.cfg.Events {
@@ -84,22 +98,13 @@ func (g *Generator) At(i int64, produced int64) (contract.Event, error) {
 	if g.choice(i, "spend-spike")%100 == 0 {
 		amount *= 8
 	}
-	// Map 10% of traffic into 00:00-06:00, 70% into 06:00-18:00 and 20%
-	// into 18:00-24:00. Event time is independent of replay TPS.
-	position := i * 1000000 / g.cfg.Events
-	var offset int64
-	if position < 100000 {
-		offset = position * 21600000 / 100000
-	} else if position < 800000 {
-		offset = 21600000 + (position-100000)*43200000/700000
-	} else {
-		offset = 64800000 + (position-800000)*21600000/200000
-	}
+	offset := g.offset(i)
 	local := i % 1000
 	if local >= 880 && local < 980 {
-		// Each full block has a velocity burst followed by 80 distinct cards.
-		anchor := (i / 1000) * 86400000 / ((g.cfg.Events + 999) / 1000)
-		offset = anchor + 30000 + (local-880)*200
+		// Each full block has a velocity burst followed by 80 distinct cards,
+		// 200 ms apart from the time of the burst's first ordinal, so event
+		// time never decreases in ordinal order.
+		offset = g.offset(i-local+880) + (local-880)*200
 		merchant = 0
 		category = 0
 		amount = 100
