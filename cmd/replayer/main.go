@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VivianSobers/swipeline/internal/authorize"
 	"github.com/VivianSobers/swipeline/internal/contract"
 	"github.com/VivianSobers/swipeline/internal/generator"
 	"github.com/VivianSobers/swipeline/internal/preview"
@@ -147,14 +148,30 @@ func run(ctx context.Context, args []string, out, errs io.Writer) error {
 		output := flags.String("output", "preview", "new output name")
 		workers := flags.Int("workers", 8, "generator workers")
 		queue := flags.Int("queue", 128, "total outstanding event bound")
+		previewOnly := flags.Bool("preview", false, "write a file preview instead of authorizing")
+		gatewayURL := flags.String("gateway", os.Getenv("SWIPELINE_GATEWAY_URL"), "authorization gateway URL")
+		mode := flags.String("deadline-mode", "latency", "latency (35/50 ms) or throughput (80/100 ms) deadlines")
+		lanes := flags.Int("lanes", 128, "bounded ordered card lanes")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
 		if flags.NArg() != 0 || *source != "synthetic" {
-			return errors.New("only synthetic preview input is supported")
+			return errors.New("only synthetic input is supported")
 		}
 		cfg := replay.Config{Generator: generator.Config{RunID: *namespace, Seed: *seed, Day: *day, Events: *events}, TPS: *tps, Workers: *workers, Queue: *queue}
 		if err := cfg.Validate(); err != nil {
+			return err
+		}
+		if !*previewOnly {
+			base := *gatewayURL
+			if base == "" {
+				base = "http://127.0.0.1:8081"
+			}
+			c := &authorize.Client{Base: base, HTTP: &http.Client{Timeout: 2 * time.Second}}
+			summary, err := authorize.Run(ctx, cfg, c, *mode, *lanes)
+			if encodeErr := json.NewEncoder(out).Encode(summary); err == nil {
+				err = encodeErr
+			}
 			return err
 		}
 		if !contract.ValidName(*output) {

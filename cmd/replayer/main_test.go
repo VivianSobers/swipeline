@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VivianSobers/swipeline/internal/auth"
+	"github.com/VivianSobers/swipeline/internal/contract"
 	"github.com/VivianSobers/swipeline/internal/preview"
 )
 
@@ -60,7 +62,7 @@ func TestServeCancellationStopsReplay(t *testing.T) {
 	var replayErr error
 	go func() {
 		defer close(replayDone)
-		replayErr = run(requestCtx, []string{"replay", "--tps", "1", "--events", "100"}, io.Discard, io.Discard)
+		replayErr = run(requestCtx, []string{"replay", "--preview", "--tps", "1", "--events", "100"}, io.Discard, io.Discard)
 	}()
 	t.Cleanup(func() {
 		cancelRequest()
@@ -132,7 +134,7 @@ func TestReplayFlagsAndStatus(t *testing.T) {
 	defer server.Close()
 	t.Setenv("SWIPELINE_URL", server.URL)
 	var out, errs bytes.Buffer
-	if err := run(context.Background(), []string{"replay", "--output", "first"}, &out, &errs); err != nil {
+	if err := run(context.Background(), []string{"replay", "--preview", "--output", "first"}, &out, &errs); err != nil {
 		t.Fatal(err)
 	}
 	if out.String() != "{\"state\":\"complete\"}\n" {
@@ -162,5 +164,28 @@ func TestInvalidCLIAndUnavailableService(t *testing.T) {
 	server.Close()
 	if run(context.Background(), []string{"health"}, &out, &errs) == nil {
 		t.Fatal("ignored unavailable service")
+	}
+}
+
+func TestAuthorizationReplayCLI(t *testing.T) {
+	var manifest auth.Run
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/runs" {
+			_ = json.NewDecoder(r.Body).Decode(&manifest)
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		var e contract.Event
+		_ = json.NewDecoder(r.Body).Decode(&e)
+		_ = json.NewEncoder(w).Encode(auth.Final{Request: auth.Request{Event: e}, DecisionID: "decision", Decision: "APPROVE"})
+	}))
+	defer server.Close()
+	var out, errs bytes.Buffer
+	args := []string{"replay", "--gateway", server.URL, "--events", "3", "--deadline-mode", "throughput", "--lanes", "4"}
+	if err := run(context.Background(), args, &out, &errs); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"completed":3`)) || manifest.Mode != "throughput" || manifest.Concurrency != 4 {
+		t.Fatal(out.String(), manifest)
 	}
 }
