@@ -3,10 +3,16 @@
 package transport
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/VivianSobers/swipeline/internal/auth"
+	"github.com/VivianSobers/swipeline/internal/contract"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -30,4 +36,39 @@ func Consumer(brokers, group string, ready func()) (*kgo.Client, error) {
 		kgo.DisableAutoCommit(), kgo.ConsumeStartOffset(kgo.NewOffset().AtStart()),
 		kgo.ConsumeResetOffset(kgo.NoResetOffset()),
 		kgo.OnPartitionsAssigned(func(context.Context, *kgo.Client, map[string][]int32) { ready() }))
+}
+
+var proposalFields = []string{"schema_version", "event_id", "run_id", "transaction_id", "source_seq", "event_time_ms",
+	"produced_at_ms", "payload_hash", "rule_version", "proposal_id", "decision", "reason", "fraud_flags", "score",
+	"velocity_60s", "usual_minor", "spend_ratio", "merchant_distinct_estimate", "features_late", "scored_at_ms"}
+
+var flags = map[string]bool{"CARD_TESTING": true, "CARD_VELOCITY": true, "SPEND_ANOMALY": true}
+
+// Proposal decodes and checks one reply record. A record that fails here is
+// dead-lettered on its own and never reaches a database batch.
+func Proposal(b []byte) (auth.Proposal, error) {
+	var p auth.Proposal
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return p, err
+	}
+	for _, k := range proposalFields {
+		if v, ok := raw[k]; !ok || bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
+			return p, fmt.Errorf("missing or null %s", k)
+		}
+	}
+	if err := json.Unmarshal(b, &p); err != nil {
+		return p, err
+	}
+	if p.SchemaVersion != 1 || p.ProposalID != contract.ID(p.TransactionID, "proposal") ||
+		(p.Decision != "APPROVE" && p.Decision != "DECLINE") || p.Score < 0 || p.Score > 180 || p.Velocity < 0 ||
+		p.Usual < 100 || p.Ratio < 0 || p.Distinct < 0 || p.Flags == nil {
+		return p, errors.New("invalid proposal")
+	}
+	for _, f := range p.Flags {
+		if !flags[f] {
+			return p, errors.New("unknown fraud flag")
+		}
+	}
+	return p, nil
 }
