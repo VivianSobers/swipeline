@@ -127,3 +127,96 @@ func TestStatusHTTP(t *testing.T) {
 		t.Fatal("final", w.Code, w.Body.String())
 	}
 }
+
+func authorizeHTTP(t *testing.T, s *Service, e contract.Event) (int, auth.Final) {
+	t.Helper()
+	w := invoke(s, http.MethodPost, "/v1/authorizations", e, e.TransactionID)
+	var f auth.Final
+	if w.Code == http.StatusOK && json.Unmarshal(w.Body.Bytes(), &f) != nil {
+		t.Fatal(w.Body.String())
+	}
+	return w.Code, f
+}
+
+func TestHTTPTimeoutFinalAndRetry(t *testing.T) {
+	s, run, e := service(t)
+	ctx := context.Background()
+	if err := s.DB.Register(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	code, first := authorizeHTTP(t, s, e)
+	if code != http.StatusOK && code != http.StatusServiceUnavailable {
+		t.Fatal(code)
+	}
+	row, err := s.DB.Lookup(ctx, e.TransactionID)
+	if err != nil {
+		t.Fatal("admission not durable:", err)
+	}
+	if row.Final == nil {
+		time.Sleep(60 * time.Millisecond)
+		if _, err = s.DB.Finalize(ctx, []store.Choice{{ID: e.TransactionID}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, f := authorizeHTTP(t, s, e)
+	if code != http.StatusOK || f.Decision != "DECLINE" || f.Source != "STAND_IN" || f.Reason != "SCORING_TIMEOUT" {
+		t.Fatal(code, f)
+	}
+	if first.DecisionID != "" && first.DecisionID != f.DecisionID {
+		t.Fatal("retry changed the outcome")
+	}
+	changed := e.Business
+	changed.AmountMinor++
+	conflict, err := contract.New(changed, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _ = authorizeHTTP(t, s, conflict); code != http.StatusConflict {
+		t.Fatal("payload conflict", code)
+	}
+}
+
+func TestTimelyProposalAnswersRequest(t *testing.T) {
+	s, run, e := service(t)
+	ctx := context.Background()
+	run.Mode = "throughput"
+	if err := s.DB.Register(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		deadline := time.Now().Add(80 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			row, err := s.DB.Lookup(ctx, e.TransactionID)
+			if err == nil {
+				p := auth.Proposal{Request: row.Request, ProposalID: contract.ID(e.TransactionID, "proposal"), Decision: "APPROVE",
+					Reason: "RULES_CLEAR", Flags: []string{}, Usual: 100, Scored: row.Request.Received}
+				_, _ = s.Finals.Submit(ctx, store.Choice{ID: e.TransactionID, Proposal: &p}, time.Now())
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	code, f := authorizeHTTP(t, s, e)
+	if code != http.StatusOK || f.Source != "FLINK" || f.Decision != "APPROVE" {
+		t.Fatal(code, f)
+	}
+}
+
+func TestAuthorizationRejectsBadRequests(t *testing.T) {
+	s, run, e := service(t)
+	if code, _ := authorizeHTTP(t, s, e); code != http.StatusUnprocessableEntity {
+		t.Fatal("unregistered run", code)
+	}
+	if err := s.DB.Register(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if w := invoke(s, http.MethodPost, "/v1/authorizations", e, contract.ID("other")); w.Code != http.StatusBadRequest {
+		t.Fatal("mismatched idempotency key", w.Code)
+	}
+	if w := invoke(s, http.MethodPost, "/v1/authorizations", []byte("{"), e.TransactionID); w.Code != http.StatusBadRequest {
+		t.Fatal("malformed body", w.Code)
+	}
+	if _, err := s.DB.Lookup(context.Background(), e.TransactionID); err == nil {
+		t.Fatal("rejected request was admitted")
+	}
+}

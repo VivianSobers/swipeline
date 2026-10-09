@@ -7,10 +7,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/VivianSobers/swipeline/internal/auth"
 	"github.com/VivianSobers/swipeline/internal/store"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Service is the authorization gateway. It has no endpoint that accepts
@@ -20,11 +23,77 @@ type Service struct {
 	Admissions    *Queue[store.Input]
 	Finals        *Queue[store.Choice]
 	ConsumerReady atomic.Bool
+
+	mu      sync.Mutex
+	waiters map[string][]chan *auth.Final
+	runs    sync.Map // run ID -> auth.Run; manifests never change
 }
 
 // New starts the admission and finalization queues; they stop with ctx.
+// Every committed final, whether from a proposal or a deadline, is handed to
+// the requests waiting on its transaction.
 func New(ctx context.Context, db *store.Store) *Service {
-	return &Service{DB: db, Admissions: NewQueue(ctx, 1024, db.Admit), Finals: NewQueue(ctx, 1024, db.Finalize)}
+	s := &Service{DB: db, waiters: map[string][]chan *auth.Final{}}
+	s.Admissions = NewQueue(ctx, 1024, db.Admit)
+	s.Finals = NewQueue(ctx, 1024, func(ctx context.Context, in []store.Choice) ([]store.Row, error) {
+		rows, err := db.Finalize(ctx, in)
+		if err == nil {
+			s.deliver(rows)
+		}
+		return rows, err
+	})
+	return s
+}
+
+// watch registers interest in id's final until the returned func is called.
+func (s *Service) watch(id string) (<-chan *auth.Final, func()) {
+	ch := make(chan *auth.Final, 1)
+	s.mu.Lock()
+	s.waiters[id] = append(s.waiters[id], ch)
+	s.mu.Unlock()
+	return ch, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		list := s.waiters[id]
+		for i, c := range list {
+			if c == ch {
+				list = append(list[:i], list[i+1:]...)
+				break
+			}
+		}
+		if len(list) == 0 {
+			delete(s.waiters, id)
+		} else {
+			s.waiters[id] = list
+		}
+	}
+}
+
+func (s *Service) deliver(rows []store.Row) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range rows {
+		if r.Final == nil {
+			continue
+		}
+		for _, ch := range s.waiters[r.Request.TransactionID] {
+			select {
+			case ch <- r.Final:
+			default:
+			}
+		}
+	}
+}
+
+func (s *Service) manifest(ctx context.Context, id string) (auth.Run, error) {
+	if r, ok := s.runs.Load(id); ok {
+		return r.(auth.Run), nil
+	}
+	r, err := s.DB.Manifest(ctx, id)
+	if err == nil {
+		s.runs.Store(id, r)
+	}
+	return r, err
 }
 
 func reply(w http.ResponseWriter, status int, v any) {
@@ -78,6 +147,7 @@ func (s *Service) Handler() http.Handler {
 		}
 		reply(w, http.StatusOK, run)
 	})
+	m.HandleFunc("POST /v1/authorizations", s.authorize)
 	m.HandleFunc("GET /v1/authorizations/{id}", func(w http.ResponseWriter, r *http.Request) {
 		row, err := s.DB.Lookup(r.Context(), r.PathValue("id"))
 		if errors.Is(err, sql.ErrNoRows) {
@@ -94,4 +164,83 @@ func (s *Service) Handler() http.Handler {
 		reply(w, http.StatusOK, row.Final)
 	})
 	return m
+}
+
+// authorize admits one request and answers within its deadline mode's
+// response budget, measured from entry, with a committed final only. When no
+// final can be confirmed in time the answer is 503 RETRY_SAME_ID; a retry
+// with the same ID returns the stored outcome.
+func (s *Service) authorize(w http.ResponseWriter, r *http.Request) {
+	entered := time.Now()
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 8192))
+	if err != nil {
+		failure(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	e, err := auth.Decode(data, r.Header.Get("Idempotency-Key"))
+	if err != nil {
+		failure(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	run, err := s.manifest(r.Context(), e.RunID)
+	if errors.Is(err, sql.ErrNoRows) {
+		failure(w, http.StatusUnprocessableEntity, "UNKNOWN_RUN")
+		return
+	} else if err != nil {
+		failure(w, http.StatusServiceUnavailable, "RETRY_SAME_ID")
+		return
+	}
+	if run.Check(e) != nil {
+		failure(w, http.StatusConflict, "RUN_CONFLICT")
+		return
+	}
+	budget := 50 * time.Millisecond
+	if run.Mode == "throughput" {
+		budget = 100 * time.Millisecond
+	}
+	ctx, cancel := context.WithDeadline(r.Context(), entered.Add(budget))
+	defer cancel()
+	finals, stop := s.watch(e.TransactionID)
+	defer stop()
+	row, err := s.Admissions.Submit(ctx, store.Input{Event: e, Received: entered.UnixMilli()}, entered.Add(2*time.Millisecond))
+	if err != nil {
+		var pg *pgconn.PgError
+		switch {
+		case errors.Is(err, ErrBusy) || errors.Is(err, store.ErrFull):
+			failure(w, http.StatusTooManyRequests, "RETRY_SAME_ID")
+		case errors.As(err, &pg) && pg.Code == "23505":
+			failure(w, http.StatusConflict, "PAYLOAD_CONFLICT")
+		default:
+			failure(w, http.StatusServiceUnavailable, "RETRY_SAME_ID")
+		}
+		return
+	}
+	if row.Final != nil {
+		reply(w, http.StatusOK, row.Final)
+		return
+	}
+	timer := time.NewTimer(time.Until(time.UnixMilli(row.Request.Scoring)))
+	defer timer.Stop()
+	for {
+		select {
+		case f := <-finals:
+			reply(w, http.StatusOK, f)
+			return
+		case <-timer.C:
+			row, err = s.Finals.Submit(ctx, store.Choice{ID: e.TransactionID}, time.Now())
+			if err != nil {
+				failure(w, http.StatusServiceUnavailable, "RETRY_SAME_ID")
+				return
+			}
+			if row.Final != nil {
+				reply(w, http.StatusOK, row.Final)
+				return
+			}
+			// The database clock has not yet passed the deadline.
+			timer.Reset(time.Millisecond)
+		case <-ctx.Done():
+			failure(w, http.StatusServiceUnavailable, "RETRY_SAME_ID")
+			return
+		}
+	}
 }
