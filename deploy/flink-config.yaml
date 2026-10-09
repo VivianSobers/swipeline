@@ -1,5 +1,8 @@
 # Process sizes leave headroom under the Compose memory limits (512m, 1536m).
 jobmanager:
+  bind-host: 0.0.0.0
+  execution:
+    failover-strategy: region
   rpc:
     address: flink-jobmanager
   memory:
@@ -10,6 +13,7 @@ jobmanager:
     jvm-overhead:
       min: 64m
 taskmanager:
+  bind-host: 0.0.0.0
   numberOfTaskSlots: 3
   memory:
     process:
@@ -41,3 +45,8 @@ state:
 rest:
   bind-address: 0.0.0.0
   address: flink-jobmanager
+# JVM module options from the image's default configuration, required on Java 17.
+env:
+  java:
+    opts:
+      all: --add-exports=java.rmi/sun.rmi.registry=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.base/java.time=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.locks=ALL-UNNAMED

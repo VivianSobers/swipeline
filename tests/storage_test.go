@@ -154,3 +154,14 @@ func TestFlinkProcessConfig(t *testing.T) {
 		}
 	}
 }
+
+// The image's default configuration carries the JVM module options Flink
+// needs on Java 17; replacing the file must keep them.
+func TestFlinkKeepsJavaModuleOptions(t *testing.T) {
+	opts := flatten(t, "../deploy/flink-config.yaml")["env.java.opts.all"]
+	for _, flag := range []string{"--add-opens=java.base/java.util=ALL-UNNAMED", "--add-opens=java.base/java.lang=ALL-UNNAMED", "--add-exports=java.rmi/sun.rmi.registry=ALL-UNNAMED"} {
+		if !strings.Contains(opts, flag) {
+			t.Errorf("missing %s", flag)
+		}
+	}
+}
