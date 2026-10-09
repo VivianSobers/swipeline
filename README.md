@@ -10,7 +10,7 @@ You need Docker (no sudo) and Docker Compose. Everything else, including the Go 
 
 ```sh
 docker compose up -d --wait
-docker compose exec replayer /swipeline replay --seed 42 --tps 50 --events 6000 --business-date 2026-10-08 --run-id demo-42 --output first
+docker compose exec replayer /swipeline replay --preview --seed 42 --tps 50 --events 6000 --business-date 2026-10-08 --run-id demo-42 --output first
 docker compose exec replayer /swipeline status
 ```
 
@@ -37,7 +37,7 @@ Both services listen on localhost only. Set `SWIPELINE_HTTP_PORT` or `SWIPELINE_
 ## Repeat a business day
 
 ```sh
-docker compose exec replayer /swipeline replay --seed 42 --tps 50 --events 6000 --business-date 2026-10-08 --run-id demo-42 --output second --workers 1
+docker compose exec replayer /swipeline replay --preview --seed 42 --tps 50 --events 6000 --business-date 2026-10-08 --run-id demo-42 --output second --workers 1
 ```
 
 `first` and `second` contain the same transactions in the same order, with identical transaction IDs, event IDs and payload hashes. Only the production timestamps and measured rates differ. The rate, worker count and queue size never change what is generated.
