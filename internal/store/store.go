@@ -269,3 +269,29 @@ func (s *Store) Finalize(ctx context.Context, in []Choice) ([]Row, error) {
 	}
 	return out, nil
 }
+
+// Pending returns up to 32 admissions whose scoring deadline has passed on
+// the database clock without a final, oldest deadline first. The recovery
+// worker finalizes them as stand-ins after a restart or a lost timer.
+func (s *Store) Pending(ctx context.Context) ([]Row, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT request_json FROM authorizations
+		WHERE status='PENDING' AND scoring_deadline_at <= extract(epoch FROM clock_timestamp()) * 1000
+		ORDER BY scoring_deadline_at, transaction_id LIMIT 32`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Row
+	for rows.Next() {
+		var data []byte
+		var r Row
+		if err = rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal(data, &r.Request); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

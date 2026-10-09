@@ -296,3 +296,48 @@ func TestFinalMutationRejected(t *testing.T) {
 		t.Fatal("pending rows must stay writable:", err)
 	}
 }
+
+func TestPendingRecovery(t *testing.T) {
+	s := database(t)
+	_, e := fixture(t, s)
+	ctx := context.Background()
+	admitAt(t, s, e, time.Now().Add(-time.Second))
+	waiting := sibling(t, e, "waiting")
+	admitAt(t, s, waiting, time.Now().Add(time.Minute))
+	recovered := false
+	for page := 0; ; page++ {
+		rows, err := s.Pending(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) > 32 || page > 10000 {
+			t.Fatal("unbounded recovery page")
+		}
+		if len(rows) == 0 {
+			break
+		}
+		choices := make([]Choice, len(rows))
+		for i, r := range rows {
+			if r.Request.TransactionID == waiting.TransactionID {
+				t.Fatal("recovered an admission before its deadline")
+			}
+			recovered = recovered || r.Request.TransactionID == e.TransactionID
+			choices[i] = Choice{ID: r.Request.TransactionID}
+		}
+		finals, err := s.Finalize(ctx, choices)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range finals {
+			if f.Final == nil || f.Final.Source != "STAND_IN" {
+				t.Fatalf("expired admission not resolved: %+v", f)
+			}
+		}
+	}
+	if !recovered {
+		t.Fatal("lost detached admission")
+	}
+	if row, err := s.Lookup(ctx, waiting.TransactionID); err != nil || row.Final != nil {
+		t.Fatal("unexpired admission finalized", err)
+	}
+}
