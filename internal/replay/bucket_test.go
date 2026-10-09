@@ -3,6 +3,7 @@ package replay
 import (
 	"context"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -54,5 +55,27 @@ func TestBucketCancellation(t *testing.T) {
 	cancel()
 	if err := b.Wait(ctx); err != context.Canceled {
 		t.Fatal(err)
+	}
+}
+
+func TestBucketMinimumTPS(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rate    float64
+		wantErr bool
+	}{
+		{"minimum", 0.001, false},
+		{"below_minimum", 0.000999, true},
+		{"tiny_positive", 1e-12, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewBucket(tc.rate, 1, &fakeClock{time.Unix(0, 0)})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("NewBucket(%g) error = %v, wantErr %t", tc.rate, err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "finite TPS in [0.001,100000]") {
+				t.Fatalf("error does not explain TPS range: %v", err)
+			}
+		})
 	}
 }

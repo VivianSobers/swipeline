@@ -38,8 +38,8 @@ type Bucket struct {
 }
 
 func NewBucket(rate float64, burst int, clock Clock) (*Bucket, error) {
-	if math.IsNaN(rate) || math.IsInf(rate, 0) || rate <= 0 || rate > 100000 || burst < 1 || burst > 4096 || clock == nil {
-		return nil, errors.New("invalid token bucket")
+	if math.IsNaN(rate) || math.IsInf(rate, 0) || rate < 0.001 || rate > 100000 || burst < 1 || burst > 4096 || clock == nil {
+		return nil, errors.New("require finite TPS in [0.001,100000], 1..4096 burst and non-nil clock")
 	}
 	return &Bucket{rate, float64(burst), float64(burst), clock.Now(), clock}, nil
 }
