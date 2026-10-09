@@ -275,3 +275,24 @@ func TestForeignProposalRejected(t *testing.T) {
 		t.Fatal("rejected proposal changed the row", row, err)
 	}
 }
+
+func TestFinalMutationRejected(t *testing.T) {
+	s := database(t)
+	_, e := fixture(t, s)
+	admitAt(t, s, e, time.Now().Add(-time.Second))
+	finalize(t, s, Choice{ID: e.TransactionID})
+	for _, statement := range []string{
+		"UPDATE authorizations SET final_json='{}' WHERE transaction_id=$1",
+		"UPDATE authorizations SET status='PENDING', final_json=NULL WHERE transaction_id=$1",
+		"DELETE FROM authorizations WHERE transaction_id=$1",
+	} {
+		if _, err := s.DB.Exec(statement, e.TransactionID); err == nil {
+			t.Fatalf("mutated final: %s", statement)
+		}
+	}
+	other := sibling(t, e, "pending")
+	admitAt(t, s, other, time.Now().Add(time.Minute))
+	if _, err := s.DB.Exec("UPDATE authorizations SET seal_epoch=seal_epoch WHERE transaction_id=$1", other.TransactionID); err != nil {
+		t.Fatal("pending rows must stay writable:", err)
+	}
+}
