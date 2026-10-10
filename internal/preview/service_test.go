@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -188,5 +189,70 @@ func TestBufferedEventWrites(t *testing.T) {
 	}
 	if bytes.Count(data, []byte("\n")) != 300 {
 		t.Fatalf("got %d events in file, want 300", bytes.Count(data, []byte("\n")))
+	}
+}
+
+func TestFailedReplayDoesNotReserveNamespace(t *testing.T) {
+	root := t.TempDir()
+	s, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. First replay fails before publishing (cancelled context).
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r1 := request()
+	r1.Output = "attempt1"
+	r1.Config.Generator.Seed = 100
+	data1, _ := json.Marshal(r1)
+	w1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/replays", bytes.NewReader(data1)).WithContext(ctx)
+	s.Handler().ServeHTTP(w1, req1)
+	if w1.Code == 200 {
+		t.Fatal("cancelled run succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(root, "previews", "attempt1")); !os.IsNotExist(err) {
+		t.Fatal("partial preview published")
+	}
+
+	// 2. Second replay with a different configuration for the same run ID succeeds.
+	r2 := request()
+	r2.Output = "attempt2"
+	r2.Config.Generator.Seed = 200
+	w2 := post(t, s, r2)
+	if w2.Code != 200 {
+		t.Fatalf("replay with different config should succeed after failed run: %d %s", w2.Code, w2.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "previews", "attempt2", "events.jsonl")); err != nil {
+		t.Fatalf("successful preview not published: %v", err)
+	}
+
+	// 3. After successful publish, a different configuration for the same run ID is rejected.
+	r3 := request()
+	r3.Output = "attempt3"
+	r3.Config.Generator.Seed = 300
+	w3 := post(t, s, r3)
+	if w3.Code != 409 {
+		t.Fatalf("expected 409 conflict for different config after publish, got %d", w3.Code)
+	}
+
+	// 4. Failing writer also does not reserve the namespace.
+	sWriter, _ := New(t.TempDir())
+	sWriter.openEvents = func(path string) (eventWriter, error) {
+		return nil, errors.New("injected disk failure")
+	}
+	rFail := request()
+	rFail.Output = "failwrite"
+	rFail.Config.Generator.Seed = 500
+	if w := post(t, sWriter, rFail); w.Code != 500 {
+		t.Fatalf("expected 500 for failing writer, got %d", w.Code)
+	}
+	sWriter.openEvents = nil
+	rSuccess := request()
+	rSuccess.Output = "successwrite"
+	rSuccess.Config.Generator.Seed = 600
+	if w := post(t, sWriter, rSuccess); w.Code != 200 {
+		t.Fatalf("replay with different config should succeed after writer failure: %d %s", w.Code, w.Body.String())
 	}
 }

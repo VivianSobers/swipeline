@@ -17,6 +17,8 @@ import (
 	"github.com/VivianSobers/swipeline/internal/replay"
 )
 
+var errNamespaceConflict = errors.New("run namespace configuration conflict")
+
 // Request asks for one generated run written to previews/<Output>.
 type Request struct {
 	Config replay.Config `json:"config"`
@@ -105,6 +107,27 @@ func (s *Service) download(w http.ResponseWriter, r *http.Request, file string) 
 	http.ServeFile(w, r, filepath.Join(dir, file))
 }
 
+// checkIdentity verifies that an existing run namespace identity matches req,
+// or returns nil if the namespace has not been claimed yet.
+func (s *Service) checkIdentity(req Request) error {
+	name := filepath.Join(s.root, "runs", req.Config.Generator.RunID+".json")
+	want := req.Config.Generator.Identity()
+	data, err := os.ReadFile(name)
+	if err == nil {
+		var have struct {
+			Identity string `json:"identity"`
+		}
+		if json.Unmarshal(data, &have) != nil || have.Identity != want {
+			return errNamespaceConflict
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // identity records the run namespace's business identity on first use and
 // rejects later requests that reuse the namespace with different content.
 func (s *Service) identity(req Request) error {
@@ -116,7 +139,7 @@ func (s *Service) identity(req Request) error {
 			Identity string `json:"identity"`
 		}
 		if json.Unmarshal(data, &have) != nil || have.Identity != want {
-			return errors.New("run namespace configuration conflict")
+			return errNamespaceConflict
 		}
 		return nil
 	}
@@ -183,8 +206,12 @@ func (s *Service) replay(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, err)
 		return
 	}
-	if err := s.identity(req); err != nil {
-		fail(w, 409, err)
+	if err := s.checkIdentity(req); err != nil {
+		code := 500
+		if errors.Is(err, errNamespaceConflict) {
+			code = 409
+		}
+		fail(w, code, err)
 		return
 	}
 	s.mu.Lock()
@@ -205,7 +232,11 @@ func (s *Service) replay(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 	if err != nil {
-		fail(w, 500, err)
+		code := 500
+		if errors.Is(err, errNamespaceConflict) {
+			code = 409
+		}
+		fail(w, code, err)
 		return
 	}
 	respond(w, 200, s.snapshot())
@@ -284,7 +315,19 @@ func (s *Service) write(r *http.Request, req Request, final string, stats *repla
 	if err = r.Context().Err(); err != nil {
 		return err
 	}
-	return os.Rename(temp, final)
+	name := filepath.Join(s.root, "runs", req.Config.Generator.RunID+".json")
+	_, statErr := os.Stat(name)
+	alreadyHadIdentity := statErr == nil
+	if err = s.identity(req); err != nil {
+		return err
+	}
+	if err = os.Rename(temp, final); err != nil {
+		if !alreadyHadIdentity {
+			_ = os.Remove(name)
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Service) metrics(w http.ResponseWriter, r *http.Request) {
