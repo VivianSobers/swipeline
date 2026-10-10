@@ -2,10 +2,11 @@
 set -eu
 project=swipeline-m2-latency-$(date +%s)-$$
 export SWIPELINE_HTTP_PORT=0 SWIPELINE_PROM_PORT=0 SWIPELINE_GATEWAY_PORT=0 SWIPELINE_FLINK_PORT=0
+. "$(dirname "$0")/dump-logs.sh"
 cleanup() {
  rc=$?
  trap - EXIT
- if [ "$rc" -ne 0 ]; then docker compose -p "$project" logs --no-color --tail 200; fi
+ if [ "$rc" -ne 0 ]; then dump_logs "$project"; fi
  docker compose -p "$project" down -v --remove-orphans
  exit "$rc"
 }
