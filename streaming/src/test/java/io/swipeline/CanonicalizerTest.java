@@ -86,4 +86,21 @@ public class CanonicalizerTest {
    assertEquals(2,counter(op,"invalid"));
   }
  }
+
+ @Test public void dedupStateSurvivesCheckpointRestore() throws Exception {
+  org.apache.flink.runtime.checkpoint.OperatorSubtaskState snapshot;
+  byte[] first=DecisionTest.fixture("decision.json");
+  try(var h=harness(new Canonicalizer())) {
+   h.open();h.processElement(new StreamRecord<>(record(first)));assertEquals(1,h.getOutput().size());snapshot=h.snapshot(1,1000);
+  }
+  var op=new Canonicalizer();
+  try(var h=harness(op)) {
+   h.initializeState(snapshot);h.open();h.processElement(new StreamRecord<>(record(first)));
+   assertTrue(h.getOutput().isEmpty());assertEquals(1,counter(op,"duplicates"));
+   h.processElement(new StreamRecord<>(record(conflict())));
+   assertTrue(h.getOutput().isEmpty());assertEquals(1,h.getSideOutput(Canonicalizer.DLQ).size());
+   quarantine(conflict(),h.getSideOutput(Canonicalizer.DLQ).peek().getValue(),"DECISION_CONFLICT",2,17);
+   assertEquals(Decision.hash(Decision.parse(first)),state(h));
+  }
+ }
 }
