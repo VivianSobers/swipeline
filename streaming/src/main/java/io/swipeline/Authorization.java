@@ -62,6 +62,7 @@ public final class Authorization {
   return build(cfg,brokers,parallelism,1);
  }
  public static StreamExecutionEnvironment build(Configuration cfg,String brokers,int parallelism,int canonParallelism){
+  if(canonParallelism<1||canonParallelism>4)throw new IllegalArgumentException("canonical parallelism 1..4");
   if(parallelism<1||parallelism>4)throw new IllegalArgumentException("parallelism 1..4");
   long bufferTimeout=Long.parseLong(cfg.toMap().getOrDefault("swipeline.authorization.buffer-timeout-ms","0"));
   if(bufferTimeout<0)throw new IllegalArgumentException("buffer timeout must be nonnegative");
@@ -99,7 +100,10 @@ public final class Authorization {
    .setStartingOffsets(OffsetsInitializer.committedOffsets(OffsetResetStrategy.EARLIEST))
    .setDeserializer(new Decisions()).build();
   var canonicalInput=env.fromSource(raw,WatermarkStrategy.noWatermarks(),"raw decisions").uid("canonical-source-v1").setParallelism(canonParallelism);
-  env.addOperator(canonicalInput.getTransformation());
+  var canonical=canonicalInput.keyBy(r->{
+   try{return Decision.transactionId(Decision.parse(r.value()));}
+   catch(IllegalArgumentException e){return "invalid";}
+  }).process(new Canonicalizer()).name("canonical decisions").uid("canonical-v1").setParallelism(canonParallelism);
   return env;
  }
  public static void main(String[] args) throws Exception {

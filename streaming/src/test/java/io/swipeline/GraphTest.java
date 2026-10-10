@@ -78,4 +78,17 @@ public class GraphTest {
   var copy=serializer.deserialize(new org.apache.flink.core.memory.DataInputDeserializer(bytes.getCopyOfBuffer()));
   assertArrayEquals(raw,copy.value());assertEquals(2,copy.partition());assertEquals(123,copy.offset());
  }
+
+ @Test public void canonicalizerKeysByTransactionAndBoundsParallelism() throws Exception {
+  var graph=Authorization.build(new Configuration(),"kafka:9092",2,3).getStreamGraph();
+  var n=node(graph,"canonical-v1");assertEquals(3,n.getParallelism());
+  assertEquals(node(graph,"canonical-source-v1").getId(),n.getInEdges().get(0).getSourceId());
+  assertTrue(n.getInEdges().get(0).getPartitioner() instanceof org.apache.flink.streaming.runtime.partitioner.KeyGroupStreamPartitioner);
+  var selector=(org.apache.flink.api.java.functions.KeySelector<DecisionRecord,String>)n.getStatePartitioners()[0];
+  var raw=DecisionTest.fixture("decision.json");
+  assertEquals(Decision.transactionId(Decision.parse(raw)),selector.getKey(new DecisionRecord(raw,2,17)));
+  assertEquals("invalid",selector.getKey(new DecisionRecord(new byte[]{0},2,18)));
+  assertThrows(IllegalArgumentException.class,()->Authorization.build(new Configuration(),"kafka:9092",2,0));
+  assertThrows(IllegalArgumentException.class,()->Authorization.build(new Configuration(),"kafka:9092",2,5));
+ }
 }
