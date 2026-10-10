@@ -55,6 +55,8 @@ Cards are synthetic tokens, never usable card numbers. Each block of 1,000 event
 
 ## Authorize transactions
 
+The latency and stand-in budgets are enforced on the four-core reference machine; CI runners with two cores check behavior and report the measurements.
+
 Start the core stack and replay through the gateway:
 
 ```sh

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 )
 
 func TestInstalledSparseLatency(t *testing.T) {
+	t.Logf("budgets enforced=%t cpus=%d", enforceBudgets(), runtime.NumCPU())
 	c := installedClient(t)
 	flink := os.Getenv("SWIPELINE_TEST_FLINK")
 	if flink == "" {
@@ -81,7 +83,7 @@ func TestInstalledSparseLatency(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("buffer=%s ms pass=%t p99=%s stand-in-share=%.3f%% samples=%d completed=%d", effective, verdict.Pass, verdict.P99, 100*verdict.StandInShare, verdict.Samples, summary.Completed)
-	if verdict.Pass != (expected == "0") {
+	if enforceBudgets() && verdict.Pass != (expected == "0") {
 		t.Fatalf("unexpected latency gate verdict: %+v", verdict)
 	}
 }

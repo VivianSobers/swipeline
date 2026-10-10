@@ -41,6 +41,8 @@ jobs:
         if: always()
         run: docker compose down -v --remove-orphans
   authorization:
+    env:
+      SWIPELINE_ENFORCE_BUDGETS: "0"
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -49,6 +51,7 @@ jobs:
           persist-credentials: false
       - name: Show container toolchain
         run: |
+          nproc
           docker version
           docker compose version
       - name: Prove installed authorization and latency

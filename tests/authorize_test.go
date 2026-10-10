@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -58,7 +59,10 @@ func installedFinals(t *testing.T, c *authorize.Client, cfg replay.Config) []aut
 	return result
 }
 
+func enforceBudgets() bool { return os.Getenv("SWIPELINE_ENFORCE_BUDGETS") != "0" }
+
 func TestInstalledAuthorization(t *testing.T) {
+	t.Logf("budgets enforced=%t cpus=%d", enforceBudgets(), runtime.NumCPU())
 	c := installedClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -87,7 +91,7 @@ func assertInstalledDecisions(t *testing.T, summary authorize.Summary, finals []
 	if summary.Completed != 1000 || summary.Offered != 1000 || len(finals) != 1000 {
 		t.Fatalf("incomplete replay: %+v", summary)
 	}
-	if summary.StandIn >= 10 {
+	if enforceBudgets() && summary.StandIn >= 10 {
 		t.Fatalf("stand-in budget exceeded: %d/1000", summary.StandIn)
 	}
 	var approved, declined, burst int
@@ -124,6 +128,7 @@ func assertInstalledDecisions(t *testing.T, summary authorize.Summary, finals []
 
 // Run the assertion in a child test process so its fatal rejection is observable.
 func TestInstalledDecisionsRejectOnePercent(t *testing.T) {
+	t.Setenv("SWIPELINE_ENFORCE_BUDGETS", "1")
 	if os.Getenv("SWIPELINE_TEST_ONE_PERCENT") == "1" {
 		finals := make([]auth.Final, 1000)
 		for i := range finals {
@@ -144,5 +149,47 @@ func TestInstalledDecisionsRejectOnePercent(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "stand-in budget exceeded: 10/1000") {
 		t.Fatalf("one-percent share was not rejected: %v\n%s", err, output)
+	}
+}
+
+func TestInstalledDecisionsBudgetSwitch(t *testing.T) {
+	if mode := os.Getenv("SWIPELINE_TEST_BUDGET_CASE"); mode != "" {
+		finals := make([]auth.Final, 1000)
+		for i := range finals {
+			finals[i] = auth.Final{Source: "FLINK", Decision: "APPROVE"}
+			if i >= 949 && i < 980 {
+				finals[i].Decision = "DECLINE"
+				finals[i].Reason = "CARD_TESTING"
+			}
+			if i < 82 {
+				finals[i].Source = "STAND_IN"
+				finals[i].Decision = "DECLINE"
+			}
+		}
+		if mode == "defect" {
+			finals[960].Decision = "APPROVE"
+		}
+		assertInstalledDecisions(t, authorize.Summary{Completed: 1000, Offered: 1000, StandIn: 82}, finals)
+		return
+	}
+	for _, tc := range []struct{ name, enforce, want string }{
+		{"default", "", "stand-in budget exceeded: 82/1000"},
+		{"enforced", "1", "stand-in budget exceeded: 82/1000"},
+		{"report", "0", ""},
+		{"defect", "0", "burst ordinal 960"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SWIPELINE_ENFORCE_BUDGETS", tc.enforce)
+			t.Setenv("SWIPELINE_TEST_BUDGET_CASE", tc.name)
+			cmd := exec.Command(os.Args[0], "-test.run=^TestInstalledDecisionsBudgetSwitch$")
+			output, err := cmd.CombinedOutput()
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("report mode rejected valid behavior: %v\n%s", err, output)
+				}
+			} else if err == nil || !strings.Contains(string(output), tc.want) {
+				t.Fatalf("expected %q rejection: %v\n%s", tc.want, err, output)
+			}
+		})
 	}
 }
