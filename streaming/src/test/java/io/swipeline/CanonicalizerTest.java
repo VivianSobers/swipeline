@@ -73,4 +73,17 @@ public class CanonicalizerTest {
    assertEquals(1,counter(op,"conflicts"));assertEquals(1,counter(op,"duplicates"));
   }
  }
+
+ @Test public void invalidInputQuarantinesWithoutStateWrites() throws Exception {
+  var op=new Canonicalizer();
+  try(var h=harness(op)) {
+   h.open();
+   byte[][] invalid={new byte[]{(byte)255,0,38},"{\"schema_version\":2}".getBytes(java.nio.charset.StandardCharsets.UTF_8)};
+   for(int i=0;i<invalid.length;i++) h.processElement(new StreamRecord<>(new DecisionRecord(invalid[i],i,41+i)));
+   assertEquals(0,h.getOutput().size());assertNull(state(h));
+   assertEquals(2,h.getSideOutput(Canonicalizer.DLQ).size());
+   for(int i=0;i<invalid.length;i++)quarantine(invalid[i],h.getSideOutput(Canonicalizer.DLQ).poll().getValue(),"INVALID_DECISION",i,41+i);
+   assertEquals(2,counter(op,"invalid"));
+  }
+ }
 }

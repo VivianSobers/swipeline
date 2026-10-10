@@ -12,15 +12,18 @@ import org.apache.flink.util.OutputTag;
 public class Canonicalizer extends KeyedProcessFunction<String,DecisionRecord,byte[]> {
  public static final OutputTag<byte[]> DLQ=new OutputTag<byte[]>("canonical-dlq"){};
  private transient ValueState<String> hash;
- private transient org.apache.flink.metrics.Counter emitted, duplicates, conflicts;
+ private transient org.apache.flink.metrics.Counter emitted, duplicates, conflicts, invalid;
  @Override public void open(OpenContext context) throws Exception {
+  invalid=getRuntimeContext().getMetricGroup().counter("canonical_invalid");
   emitted=getRuntimeContext().getMetricGroup().counter("canonical_emitted");
   conflicts=getRuntimeContext().getMetricGroup().counter("canonical_conflicts");
   duplicates=getRuntimeContext().getMetricGroup().counter("canonical_duplicates");
   hash=getRuntimeContext().getState(new ValueStateDescriptor<>("decision-hash",Types.STRING));
  }
  @Override public void processElement(DecisionRecord record,Context ctx,Collector<byte[]> out) throws Exception {
-  var n=Decision.parse(record.value());
+  org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.ObjectNode n;
+  try {n=Decision.parse(record.value());}
+  catch(IllegalArgumentException e) {invalid.inc(); quarantine(record,ctx,"INVALID_DECISION"); return;}
   String incoming=Decision.hash(n);
   if(incoming.equals(hash.value())) {duplicates.inc(); return;}
   if(hash.value()!=null) {
