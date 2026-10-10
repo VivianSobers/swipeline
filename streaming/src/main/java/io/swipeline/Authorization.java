@@ -26,6 +26,9 @@ public final class Authorization {
   Properties p=new Properties();p.setProperty("fetch.min.bytes","1");p.setProperty("fetch.max.wait.ms","1");
   p.setProperty("max.poll.records","256");p.setProperty("isolation.level","read_uncommitted");p.setProperty("auto.offset.reset","none");return p;
  }
+ public static Properties canonicalConsumer(){
+  Properties p=consumer();p.setProperty("isolation.level","read_committed");return p;
+ }
  public static Properties producer(){
   Properties p=new Properties();p.setProperty("linger.ms","0");p.setProperty("batch.size","32768");
   p.setProperty("acks","all");p.setProperty("enable.idempotence","true");p.setProperty("max.in.flight.requests.per.connection","5");return p;
@@ -51,7 +54,14 @@ public final class Authorization {
   try{var n=Wire.parse(r.value);return Wire.JSON.writeValueAsString(new String[]{n.path("run_id").asText(),n.path(field).asText()});}
   catch(Exception e){return "invalid";}
  }
+ static final class Decisions implements KafkaRecordDeserializationSchema<DecisionRecord> {
+  @Override public void deserialize(ConsumerRecord<byte[],byte[]> r,Collector<DecisionRecord> out){out.collect(new DecisionRecord(r.value(),r.partition(),r.offset()));}
+  @Override public TypeInformation<DecisionRecord> getProducedType(){return TypeInformation.of(DecisionRecord.class);}
+ }
  public static StreamExecutionEnvironment build(Configuration cfg,String brokers,int parallelism){
+  return build(cfg,brokers,parallelism,1);
+ }
+ public static StreamExecutionEnvironment build(Configuration cfg,String brokers,int parallelism,int canonParallelism){
   if(parallelism<1||parallelism>4)throw new IllegalArgumentException("parallelism 1..4");
   long bufferTimeout=Long.parseLong(cfg.toMap().getOrDefault("swipeline.authorization.buffer-timeout-ms","0"));
   if(bufferTimeout<0)throw new IllegalArgumentException("buffer timeout must be nonnegative");
@@ -84,6 +94,12 @@ public final class Authorization {
   merchant.sinkTo(sink(brokers,"swipeline.auth.proposals.v1")).uid("proposals-v1");
   card.getSideOutput(CardOperator.DLQ).union(merchant.getSideOutput(CardOperator.DLQ))
    .sinkTo(sink(brokers,"swipeline.dlq.v1")).uid("dlq-v1");
+  var raw=KafkaSource.<DecisionRecord>builder().setBootstrapServers(brokers).setTopics("swipeline.decisions.raw.v1")
+   .setGroupId("swipeline-canonical-v1").setProperties(canonicalConsumer())
+   .setStartingOffsets(OffsetsInitializer.committedOffsets(OffsetResetStrategy.EARLIEST))
+   .setDeserializer(new Decisions()).build();
+  var canonicalInput=env.fromSource(raw,WatermarkStrategy.noWatermarks(),"raw decisions").uid("canonical-source-v1").setParallelism(canonParallelism);
+  env.addOperator(canonicalInput.getTransformation());
   return env;
  }
  public static void main(String[] args) throws Exception {
