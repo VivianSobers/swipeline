@@ -32,6 +32,8 @@ ready
   case "$action" in
    stop-taskmanager) docker compose -p "$project" stop flink-taskmanager || rc=$? ;;
    start-taskmanager) docker compose -p "$project" up -d --wait --wait-timeout 180 || rc=$? ;;
+   kill-gateway) docker compose -p "$project" kill -s SIGKILL gateway || rc=$? ;;
+   start-gateway) docker compose -p "$project" up -d --wait --wait-timeout 180 && ready || rc=$? ;;
    *) rc=2 ;;
   esac
   printf '%s %s\n' "$id" "$rc" > "$work/result"
@@ -41,6 +43,6 @@ ready
 worker=$!
 docker run --rm --memory=768m --cpus=2 --network "${project}_default" --user "$(id -u):$(id -g)" \
  -e GOMEMLIMIT=512MiB -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false \
- -e SWIPELINE_TEST_GATEWAY=http://gateway:8081 -e SWIPELINE_KAFKA=kafka:9092 -e SWIPELINE_FAULT_DIR=/faults \
+ -e SWIPELINE_TEST_DB=postgres://gateway:gateway-local@postgres:5432/gateway?sslmode=disable -e SWIPELINE_TEST_GATEWAY=http://gateway:8081 -e SWIPELINE_KAFKA=kafka:9092 -e SWIPELINE_FAULT_DIR=/faults \
  -v "$PWD:/src:ro,z" -v "$work:/faults:z" -w /src golang:1.27.2 \
- go test ./tests -run '^(TestInstalledAuthorization|TestLateProposalAfterStandIn)$' -count=1 -v
+ go test ./tests -run '^(TestInstalledAuthorization|TestLateProposalAfterStandIn|TestGatewayRestartRecovers)$' -count=1 -v
