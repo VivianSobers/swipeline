@@ -12,9 +12,10 @@ import org.apache.flink.util.OutputTag;
 public class Canonicalizer extends KeyedProcessFunction<String,DecisionRecord,byte[]> {
  public static final OutputTag<byte[]> DLQ=new OutputTag<byte[]>("canonical-dlq"){};
  private transient ValueState<String> hash;
- private transient org.apache.flink.metrics.Counter emitted, duplicates;
+ private transient org.apache.flink.metrics.Counter emitted, duplicates, conflicts;
  @Override public void open(OpenContext context) throws Exception {
   emitted=getRuntimeContext().getMetricGroup().counter("canonical_emitted");
+  conflicts=getRuntimeContext().getMetricGroup().counter("canonical_conflicts");
   duplicates=getRuntimeContext().getMetricGroup().counter("canonical_duplicates");
   hash=getRuntimeContext().getState(new ValueStateDescriptor<>("decision-hash",Types.STRING));
  }
@@ -22,8 +23,15 @@ public class Canonicalizer extends KeyedProcessFunction<String,DecisionRecord,by
   var n=Decision.parse(record.value());
   String incoming=Decision.hash(n);
   if(incoming.equals(hash.value())) {duplicates.inc(); return;}
+  if(hash.value()!=null) {
+   conflicts.inc(); quarantine(record,ctx,"DECISION_CONFLICT"); return;
+  }
   hash.update(incoming);
   out.collect(record.value());
   emitted.inc();
+ }
+ private void quarantine(DecisionRecord record,Context ctx,String code) throws Exception {
+  ctx.output(DLQ,Wire.quarantine("swipeline.decisions.raw.v1",record.value(),record.partition(),record.offset(),code,
+   ctx.timerService().currentProcessingTime()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
  }
 }

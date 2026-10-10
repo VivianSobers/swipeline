@@ -48,4 +48,29 @@ public class CanonicalizerTest {
    assertTrue(h.getSideOutput(Canonicalizer.DLQ)==null || h.getSideOutput(Canonicalizer.DLQ).isEmpty());
   }
  }
+
+ static byte[] conflict() throws Exception {
+  var n=DecisionTest.fixture();n.put("amount_minor",n.get("amount_minor").longValue()+1);return Wire.JSON.writeValueAsBytes(n);
+ }
+ static void quarantine(byte[] raw,byte[] dlq,String code,int partition,long offset) throws Exception {
+  var q=Wire.JSON.readTree(dlq);
+  assertEquals("swipeline.decisions.raw.v1",q.path("origin_topic").asText());
+  assertEquals(partition,q.path("partition").intValue()); assertEquals(offset,q.path("offset").longValue());
+  assertEquals(code,q.path("error_code").asText()); assertEquals("redacted",q.path("sanitized_input").asText());
+  assertEquals(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(raw)),q.path("payload_hash").asText());
+  assertTrue(q.path("detected_at_ms").isIntegralNumber()); assertTrue(q.path("detected_at_ms").longValue()>=0);
+ }
+ @Test public void conflictIsQuarantinedWithoutReplacingFirst() throws Exception {
+  var op=new Canonicalizer();
+  try(var h=harness(op)) {
+   h.open();byte[] first=DecisionTest.fixture("decision.json"), changed=conflict();
+   h.processElement(new StreamRecord<>(record(first)));
+   h.processElement(new StreamRecord<>(new DecisionRecord(changed,3,99)));
+   h.processElement(new StreamRecord<>(record(first)));
+   assertEquals(1,h.getOutput().size());assertEquals(1,h.getSideOutput(Canonicalizer.DLQ).size());
+   quarantine(changed,h.getSideOutput(Canonicalizer.DLQ).peek().getValue(),"DECISION_CONFLICT",3,99);
+   assertEquals(Decision.hash(Decision.parse(first)),state(h));
+   assertEquals(1,counter(op,"conflicts"));assertEquals(1,counter(op,"duplicates"));
+  }
+ }
 }

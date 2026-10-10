@@ -33,7 +33,10 @@ public static void validate(ObjectNode n)throws Exception {
  if(!hash.equals(n.path("payload_hash").asText()))throw new IllegalArgumentException("payload hash");
 }
 public static String quarantine(byte[] input,int partition,long offset,String error,long now)throws Exception {
- ObjectNode q=JSON.createObjectNode();q.put("origin_topic","swipeline.auth.requests.v1");
+ return quarantine("swipeline.auth.requests.v1",input,partition,offset,error,now);
+}
+public static String quarantine(String topic,byte[] input,int partition,long offset,String error,long now)throws Exception {
+ ObjectNode q=JSON.createObjectNode();q.put("origin_topic",topic);
  q.put("partition",partition);q.put("offset",offset);q.put("error_code",error);
  q.put("payload_hash",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(input)));
  q.put("sanitized_input","redacted");q.put("detected_at_ms",now);return q.toString();
