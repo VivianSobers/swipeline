@@ -94,7 +94,7 @@ func assertInstalledDecisions(t *testing.T, summary authorize.Summary, finals []
 	if enforceBudgets() && summary.StandIn >= 10 {
 		t.Fatalf("stand-in budget exceeded: %d/1000", summary.StandIn)
 	}
-	var approved, declined, burst int
+	var approved, declined, burst, comfortable int
 	for ordinal, f := range finals {
 		if f.Source == "STAND_IN" {
 			continue
@@ -116,13 +116,30 @@ func assertInstalledDecisions(t *testing.T, summary authorize.Summary, finals []
 		// Rules requires estimate >=50 and >=80% small attempts.
 		if ordinal >= 949 && ordinal < 980 {
 			burst++
-			if f.Decision != "DECLINE" || f.Reason != "CARD_TESTING" {
-				t.Errorf("burst ordinal %d: %s %s (distinct=%v)", ordinal, f.Decision, f.Reason, f.Distinct)
+			if ordinal >= 970 {
+				comfortable++
+			}
+			var valid bool
+			if f.Distinct != nil {
+				if ordinal >= 970 {
+					valid = f.Decision == "DECLINE" && f.Reason == "CARD_TESTING"
+				} else if *f.Distinct >= 50 {
+					valid = f.Decision == "DECLINE" && f.Reason == "CARD_TESTING"
+				} else {
+					valid = f.Decision == "APPROVE"
+				}
+			}
+			if !valid {
+				distinct := "none"
+				if f.Distinct != nil {
+					distinct = fmt.Sprintf("%v", *f.Distinct)
+				}
+				t.Errorf("burst ordinal %d: %s %s (distinct=%s)", ordinal, f.Decision, f.Reason, distinct)
 			}
 		}
 	}
-	if approved == 0 || declined == 0 || burst == 0 {
-		t.Fatalf("missing scored outcomes: approvals=%d declines=%d burst=%d", approved, declined, burst)
+	if approved == 0 || declined == 0 || burst == 0 || comfortable == 0 {
+		t.Fatalf("missing scored outcomes: approvals=%d declines=%d burst=%d comfortable=%d", approved, declined, burst, comfortable)
 	}
 }
 
@@ -131,11 +148,13 @@ func TestInstalledDecisionsRejectOnePercent(t *testing.T) {
 	t.Setenv("SWIPELINE_ENFORCE_BUDGETS", "1")
 	if os.Getenv("SWIPELINE_TEST_ONE_PERCENT") == "1" {
 		finals := make([]auth.Final, 1000)
+		estimate := 50.3
 		for i := range finals {
 			finals[i] = auth.Final{Source: "FLINK", Decision: "APPROVE"}
 			if i >= 949 && i < 980 {
 				finals[i].Decision = "DECLINE"
 				finals[i].Reason = "CARD_TESTING"
+				finals[i].Distinct = &estimate
 			}
 			if i < 10 {
 				finals[i].Source = "STAND_IN"
@@ -155,11 +174,13 @@ func TestInstalledDecisionsRejectOnePercent(t *testing.T) {
 func TestInstalledDecisionsBudgetSwitch(t *testing.T) {
 	if mode := os.Getenv("SWIPELINE_TEST_BUDGET_CASE"); mode != "" {
 		finals := make([]auth.Final, 1000)
+		estimate := 50.3
 		for i := range finals {
 			finals[i] = auth.Final{Source: "FLINK", Decision: "APPROVE"}
 			if i >= 949 && i < 980 {
 				finals[i].Decision = "DECLINE"
 				finals[i].Reason = "CARD_TESTING"
+				finals[i].Distinct = &estimate
 			}
 			if i < 82 {
 				finals[i].Source = "STAND_IN"
@@ -186,6 +207,62 @@ func TestInstalledDecisionsBudgetSwitch(t *testing.T) {
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("report mode rejected valid behavior: %v\n%s", err, output)
+				}
+			} else if err == nil || !strings.Contains(string(output), tc.want) {
+				t.Fatalf("expected %q rejection: %v\n%s", tc.want, err, output)
+			}
+		})
+	}
+}
+
+func TestInstalledDecisionsBurstThreshold(t *testing.T) {
+	if tc := os.Getenv("SWIPELINE_TEST_BURST_CASE"); tc != "" {
+		finals := make([]auth.Final, 1000)
+		estimate := 55.0
+		for i := range finals {
+			finals[i] = auth.Final{Source: "FLINK", Decision: "APPROVE"}
+			if i >= 949 && i < 980 {
+				finals[i].Decision = "DECLINE"
+				finals[i].Reason = "CARD_TESTING"
+				finals[i].Distinct = &estimate
+			}
+		}
+		switch tc {
+		case "near-threshold":
+			est492 := 49.2
+			est498 := 49.8
+			finals[949].Decision = "APPROVE"
+			finals[949].Reason = "RULES_CLEAR"
+			finals[949].Distinct = &est492
+			finals[950].Decision = "APPROVE"
+			finals[950].Reason = "RULES_CLEAR"
+			finals[950].Distinct = &est498
+		case "above-threshold-approved":
+			est490 := 49.0
+			finals[975].Decision = "APPROVE"
+			finals[975].Reason = "RULES_CLEAR"
+			finals[975].Distinct = &est490
+		case "high-estimate-approved":
+			est520 := 52.0
+			finals[955].Decision = "APPROVE"
+			finals[955].Reason = "RULES_CLEAR"
+			finals[955].Distinct = &est520
+		}
+		assertInstalledDecisions(t, authorize.Summary{Completed: 1000, Offered: 1000}, finals)
+		return
+	}
+	for _, tc := range []struct{ name, want string }{
+		{"near-threshold", ""},
+		{"above-threshold-approved", "burst ordinal 975"},
+		{"high-estimate-approved", "burst ordinal 955"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestInstalledDecisionsBurstThreshold$")
+			cmd.Env = append(os.Environ(), "SWIPELINE_TEST_BURST_CASE="+tc.name)
+			output, err := cmd.CombinedOutput()
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("near-threshold valid behavior rejected: %v\n%s", err, output)
 				}
 			} else if err == nil || !strings.Contains(string(output), tc.want) {
 				t.Fatalf("expected %q rejection: %v\n%s", tc.want, err, output)
