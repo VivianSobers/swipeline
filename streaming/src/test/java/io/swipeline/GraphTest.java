@@ -6,6 +6,7 @@ import org.apache.flink.configuration.Configuration;
 public class GraphTest {
  @Test public void effectiveReplyGraph() throws Exception {
   var env=Authorization.build(new Configuration(),"kafka:9092",2);
+  assertEquals("0",env.getConfig().getGlobalJobParameters().toMap().get("authorization.buffer-timeout-ms"));
   assertEquals(10000L,env.getCheckpointConfig().getCheckpointInterval());
   var graph=env.getStreamGraph();var uids=new HashSet<String>();
   for(var n:graph.getStreamNodes()){
@@ -19,6 +20,15 @@ public class GraphTest {
   assertEquals("0",Authorization.producer().getProperty("linger.ms"));
   assertEquals("true",Authorization.producer().getProperty("enable.idempotence"));
   assertEquals("all",Authorization.producer().getProperty("acks"));
+ }
+ @Test public void explicitBufferTimeoutOverride() throws Exception {
+  var cfg=new Configuration();
+  cfg.setString("swipeline.authorization.buffer-timeout-ms","100");
+  var env=Authorization.build(cfg,"kafka:9092",2);
+  assertEquals("100",env.getConfig().getGlobalJobParameters().toMap().get("authorization.buffer-timeout-ms"));
+  for(var n:env.getStreamGraph().getStreamNodes()){
+   assertEquals("buffer timeout of "+n.getOperatorName(),100,n.getBufferTimeout());
+  }
  }
  @Test public void restoredGraphDoesNotClaimCheckpoint() throws Exception {
   var cfg=new Configuration();

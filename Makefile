@@ -29,3 +29,6 @@ streaming-check:
 .PHONY: m2-demo
 m2-demo:
 	@sh tests/m2-demo.sh
+.PHONY: m2-latency
+m2-latency:
+	@sh tests/m2-latency.sh

@@ -176,6 +176,8 @@ services:
     environment:
       KAFKA_BROKERS: kafka:9092
       AUTH_PARALLELISM: "2"
+      AUTH_BUFFER_TIMEOUT_MS: "${SWIPELINE_AUTH_BUFFER_TIMEOUT_MS:-0}"
+      FLINK_PROPERTIES: "${SWIPELINE_FLINK_PROPERTIES:-}"
     volumes:
       - flink-state:/state
     ports:

@@ -53,7 +53,9 @@ public final class Authorization {
  }
  public static StreamExecutionEnvironment build(Configuration cfg,String brokers,int parallelism){
   if(parallelism<1||parallelism>4)throw new IllegalArgumentException("parallelism 1..4");
-  cfg.setString("execution.buffer-timeout.enabled","true");cfg.setString("execution.buffer-timeout.interval","0 ms");
+  long bufferTimeout=Long.parseLong(cfg.toMap().getOrDefault("swipeline.authorization.buffer-timeout-ms","0"));
+  if(bufferTimeout<0)throw new IllegalArgumentException("buffer timeout must be nonnegative");
+  cfg.setString("execution.buffer-timeout.enabled","true");cfg.setString("execution.buffer-timeout.interval",bufferTimeout+" ms");
   cfg.setString("execution.checkpointing.interval","10 s");cfg.setString("execution.checkpointing.mode","EXACTLY_ONCE");
   cfg.setString("execution.checkpointing.timeout","60 s");
   // Standalone 2.2.1 exposes the restore path but no claim-mode CLI option.
@@ -61,7 +63,15 @@ public final class Authorization {
   cfg.setString("execution.checkpointing.externalized-checkpoint-retention","RETAIN_ON_CANCELLATION");
   cfg.setString("state.backend.type","rocksdb");cfg.setString("state.backend.incremental","true");
   var env=StreamExecutionEnvironment.getExecutionEnvironment(cfg);
-  env.setParallelism(parallelism);env.setMaxParallelism(128);env.setBufferTimeout(0);
+  env.setParallelism(parallelism);env.setMaxParallelism(128);env.setBufferTimeout(bufferTimeout);
+  // REST job configuration exposes the applied environment value, not just
+  // the requested override. Graph tests also verify every operator's value.
+  final long effectiveTimeout=env.getBufferTimeout();
+  env.getConfig().setGlobalJobParameters(new org.apache.flink.api.common.ExecutionConfig.GlobalJobParameters(){
+   @Override public java.util.Map<String,String> toMap(){
+    return java.util.Map.of("authorization.buffer-timeout-ms",Long.toString(effectiveTimeout));
+   }
+  });
   var source=KafkaSource.<RequestRecord>builder().setBootstrapServers(brokers).setTopics("swipeline.auth.requests.v1")
    .setGroupId("swipeline-authorization-v1").setProperties(consumer())
    .setStartingOffsets(OffsetsInitializer.committedOffsets(OffsetResetStrategy.EARLIEST))
@@ -77,7 +87,9 @@ public final class Authorization {
   return env;
  }
  public static void main(String[] args) throws Exception {
-  build(new Configuration(),System.getenv().getOrDefault("KAFKA_BROKERS","kafka:9092"),
+  var cfg=new Configuration();
+  cfg.setString("swipeline.authorization.buffer-timeout-ms",System.getenv().getOrDefault("AUTH_BUFFER_TIMEOUT_MS","0"));
+  build(cfg,System.getenv().getOrDefault("KAFKA_BROKERS","kafka:9092"),
    Integer.parseInt(System.getenv().getOrDefault("AUTH_PARALLELISM","2"))).execute("authorization");
  }
 }
