@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/VivianSobers/swipeline/internal/generator"
@@ -135,5 +136,57 @@ func TestMetricsAccumulateAcrossRuns(t *testing.T) {
 	s.runMu.Unlock()
 	if w.Code != 409 {
 		t.Fatal("overlapping run accepted")
+	}
+}
+
+type countingWriter struct {
+	*os.File
+	mu     sync.Mutex
+	writes int
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	c.writes++
+	c.mu.Unlock()
+	return c.File.Write(p)
+}
+
+func (c *countingWriter) writeCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.writes
+}
+
+func TestBufferedEventWrites(t *testing.T) {
+	root := t.TempDir()
+	s, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cw := &countingWriter{}
+	s.openEvents = func(path string) (eventWriter, error) {
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			return nil, err
+		}
+		cw.File = f
+		return cw, nil
+	}
+	r := request()
+	r.Config.Generator.Events = 300
+	if w := post(t, s, r); w.Code != 200 {
+		t.Fatalf("replay failed: %d %s", w.Code, w.Body.String())
+	}
+	writes := cw.writeCount()
+	if writes >= 300 || writes > 20 {
+		t.Fatalf("expected far fewer writes than events (buffered): got %d writes for 300 events", writes)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "previews", "first", "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Count(data, []byte("\n")) != 300 {
+		t.Fatalf("got %d events in file, want 300", bytes.Count(data, []byte("\n")))
 	}
 }

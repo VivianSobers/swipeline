@@ -3,6 +3,7 @@
 package preview
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,13 +32,19 @@ type Status struct {
 	Progress replay.Snapshot `json:"progress"`
 }
 
+type eventWriter interface {
+	io.WriteCloser
+	Sync() error
+}
+
 type Service struct {
-	root   string
-	runMu  sync.Mutex
-	mu     sync.Mutex
-	status Status
-	stats  *replay.Stats
-	past   replay.Snapshot
+	root       string
+	runMu      sync.Mutex
+	mu         sync.Mutex
+	status     Status
+	stats      *replay.Stats
+	past       replay.Snapshot
+	openEvents func(path string) (eventWriter, error)
 }
 
 // New prepares root/runs (namespace identities) and root/previews.
@@ -213,12 +220,32 @@ func (s *Service) write(r *http.Request, req Request, final string, stats *repla
 		return err
 	}
 	defer os.RemoveAll(temp)
-	file, err := os.OpenFile(filepath.Join(temp, "events.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	open := s.openEvents
+	if open == nil {
+		open = func(path string) (eventWriter, error) {
+			return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		}
+	}
+	file, err := open(filepath.Join(temp, "events.jsonl"))
 	if err != nil {
 		return err
 	}
-	encoder := json.NewEncoder(file)
-	err = replay.Run(r.Context(), req.Config, func(e contract.Event) error { return encoder.Encode(e) }, stats)
+	buf := bufio.NewWriterSize(file, 64*1024)
+	encoder := json.NewEncoder(buf)
+	first := true
+	err = replay.Run(r.Context(), req.Config, func(e contract.Event) error {
+		if err := encoder.Encode(e); err != nil {
+			return err
+		}
+		if first {
+			first = false
+			return buf.Flush()
+		}
+		return nil
+	}, stats)
+	if err == nil {
+		err = buf.Flush()
+	}
 	if err == nil {
 		err = file.Sync()
 	}
