@@ -21,7 +21,12 @@ const ReplyPollRecords = 256
 // arbitrated concurrently, so they share database batches; offsets are
 // committed only once every record is final or dead-lettered. Any other
 // error stops the loop with offsets uncommitted, so a restart redelivers.
-func Replies(ctx context.Context, s *gateway.Service, c, p *kgo.Client) error {
+func Replies(ctx context.Context, s *gateway.Service, c, p *kgo.Client) (err error) {
+	defer func() {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+	}()
 	for {
 		fetch := c.PollRecords(ctx, ReplyPollRecords)
 		if err := ctx.Err(); err != nil {

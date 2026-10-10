@@ -11,6 +11,7 @@ import (
 	"github.com/VivianSobers/swipeline/internal/auth"
 	"github.com/VivianSobers/swipeline/internal/contract"
 	"github.com/VivianSobers/swipeline/internal/gateway"
+	"github.com/VivianSobers/swipeline/internal/store"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -98,3 +99,48 @@ func TestRepliesArbitrateAndQuarantine(t *testing.T) {
 }
 
 func hash(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeToString(sum[:]) }
+
+// Cancellation inside finalization must escape the poll as the plain context error.
+func TestRepliesCancellationDuringArbitration(t *testing.T) {
+	s, brokers := live(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	row := admitted(t, s, time.Now().Add(time.Minute))
+	proposal := auth.Proposal{Request: row.Request, ProposalID: contract.ID(row.Request.TransactionID, "proposal"), Decision: "APPROVE", Reason: "RULES_CLEAR", Flags: []string{}, Usual: 100, Scored: row.Request.Received}
+	data, err := json.Marshal(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := Producer(brokers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	record := &kgo.Record{Topic: "swipeline.auth.proposals.v1", Key: []byte(row.Request.TransactionID), Value: data}
+	record.Partition = auth.Partition(record.Key)
+	if err = p.ProduceSync(ctx, record).FirstErr(); err != nil {
+		t.Fatal(err)
+	}
+	c, err := kgo.NewClient(kgo.SeedBrokers(brokers), kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{record.Topic: {record.Partition: kgo.NewOffset().At(record.Offset)}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	run, stop := context.WithCancel(ctx)
+	defer stop()
+	entered := make(chan struct{}, 1)
+	service := &gateway.Service{Finals: gateway.NewQueue(ctx, ReplyPollRecords, func(call context.Context, values []store.Choice) ([]store.Row, error) {
+		entered <- struct{}{}
+		stop()
+		return nil, context.Canceled
+	})}
+	err = Replies(run, service, c, p)
+	select {
+	case <-entered:
+	default:
+		t.Fatal("cancellation did not occur during arbitration")
+	}
+	if err != context.Canceled {
+		t.Fatalf("reply loop returned %T: %v; want plain context.Canceled", err, err)
+	}
+}
