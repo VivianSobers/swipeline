@@ -40,3 +40,21 @@ jobs:
       - name: Remove storage
         if: always()
         run: docker compose down -v --remove-orphans
+  authorization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Show container toolchain
+        run: |
+          docker version
+          docker compose version
+      - name: Prove installed authorization and latency
+        # Targets print service logs on failure and remove their own projects.
+        # Run sequentially: 4096 MiB stack + 768 MiB test container.
+        run: |
+          set -eu
+          make m2-demo
+          make m2-latency
