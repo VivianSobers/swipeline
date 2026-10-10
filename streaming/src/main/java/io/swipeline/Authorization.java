@@ -45,6 +45,21 @@ public final class Authorization {
     catch(Exception e){throw new IllegalArgumentException(e);}
    }).build();
  }
+ public static KafkaSink<byte[]> canonicalSink(String brokers){
+  Properties p=producer();p.setProperty("transaction.timeout.ms","600000");
+  return KafkaSink.<byte[]>builder().setBootstrapServers(brokers).setKafkaProducerConfig(p)
+   .setDeliveryGuarantee(DeliveryGuarantee.EXACTLY_ONCE).setTransactionalIdPrefix("swipeline-canonical-v1")
+   .setRecordSerializer((KafkaRecordSerializationSchema<byte[]>)(v,c,timestamp)->
+    new ProducerRecord<>("swipeline.decisions.v1",Decision.transactionId(Decision.parse(v)).getBytes(StandardCharsets.UTF_8),v)).build();
+ }
+ static KafkaSink<byte[]> canonicalDlqSink(String brokers){
+  return KafkaSink.<byte[]>builder().setBootstrapServers(brokers).setKafkaProducerConfig(producer())
+   .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+   .setRecordSerializer((KafkaRecordSerializationSchema<byte[]>)(v,c,timestamp)->{
+    try{return new ProducerRecord<>("swipeline.dlq.v1",key(new String(v,StandardCharsets.UTF_8)),v);}
+    catch(Exception e){throw new IllegalArgumentException(e);}
+   }).build();
+ }
  /** Keeps each record's source partition and offset for dead letters. */
  static final class Requests implements KafkaRecordDeserializationSchema<RequestRecord> {
   @Override public void deserialize(ConsumerRecord<byte[],byte[]> r,Collector<RequestRecord> out){out.collect(new RequestRecord(r.value(),r.partition(),r.offset()));}
@@ -104,6 +119,8 @@ public final class Authorization {
    try{return Decision.transactionId(Decision.parse(r.value()));}
    catch(IllegalArgumentException e){return "invalid";}
   }).process(new Canonicalizer()).name("canonical decisions").uid("canonical-v1").setParallelism(canonParallelism);
+  canonical.sinkTo(canonicalSink(brokers)).uid("canonical-sink-v1").setParallelism(canonParallelism);
+  canonical.getSideOutput(Canonicalizer.DLQ).sinkTo(canonicalDlqSink(brokers)).uid("canonical-dlq-v1").setParallelism(canonParallelism);
   return env;
  }
  public static void main(String[] args) throws Exception {

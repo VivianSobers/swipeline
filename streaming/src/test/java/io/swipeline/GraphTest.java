@@ -91,4 +91,20 @@ public class GraphTest {
   assertThrows(IllegalArgumentException.class,()->Authorization.build(new Configuration(),"kafka:9092",2,0));
   assertThrows(IllegalArgumentException.class,()->Authorization.build(new Configuration(),"kafka:9092",2,5));
  }
+
+ @Test public void canonicalSinkIsTransactionalAndKeysUnchangedFinals() throws Exception {
+  var graph=Authorization.build(new Configuration(),"kafka:9092",2,3).getStreamGraph();
+  var n=node(graph,"canonical-sink-v1");assertEquals(3,n.getParallelism());
+  var sink=field(n.getOperatorFactory(),"sink");
+  assertEquals(org.apache.flink.connector.base.DeliveryGuarantee.EXACTLY_ONCE,field(sink,"deliveryGuarantee"));
+  assertEquals("swipeline-canonical-v1",field(sink,"transactionalIdPrefix"));
+  assertEquals("600000",((java.util.Properties)field(sink,"kafkaProducerConfig")).getProperty("transaction.timeout.ms"));
+  var serializer=(org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema<byte[]>)field(sink,"recordSerializer");
+  byte[] raw=DecisionTest.fixture("decision.json");var record=serializer.serialize(raw,null,null);
+  assertEquals("swipeline.decisions.v1",record.topic());assertArrayEquals(raw,record.value());
+  assertEquals(Decision.transactionId(Decision.parse(raw)),new String(record.key(),java.nio.charset.StandardCharsets.UTF_8));
+  var dlq=node(graph,"canonical-dlq-v1");assertEquals(3,dlq.getParallelism());
+  assertEquals(Canonicalizer.DLQ,dlq.getInEdges().get(0).getOutputTag());
+  assertEquals(org.apache.flink.connector.base.DeliveryGuarantee.AT_LEAST_ONCE,field(field(dlq.getOperatorFactory(),"sink"),"deliveryGuarantee"));
+ }
 }
