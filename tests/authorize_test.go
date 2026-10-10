@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,7 +87,7 @@ func assertInstalledDecisions(t *testing.T, summary authorize.Summary, finals []
 	if summary.Completed != 1000 || summary.Offered != 1000 || len(finals) != 1000 {
 		t.Fatalf("incomplete replay: %+v", summary)
 	}
-	if summary.StandIn > 10 {
+	if summary.StandIn >= 10 {
 		t.Fatalf("stand-in budget exceeded: %d/1000", summary.StandIn)
 	}
 	var approved, declined, burst int
@@ -117,5 +119,30 @@ func assertInstalledDecisions(t *testing.T, summary authorize.Summary, finals []
 	}
 	if approved == 0 || declined == 0 || burst == 0 {
 		t.Fatalf("missing scored outcomes: approvals=%d declines=%d burst=%d", approved, declined, burst)
+	}
+}
+
+// Run the assertion in a child test process so its fatal rejection is observable.
+func TestInstalledDecisionsRejectOnePercent(t *testing.T) {
+	if os.Getenv("SWIPELINE_TEST_ONE_PERCENT") == "1" {
+		finals := make([]auth.Final, 1000)
+		for i := range finals {
+			finals[i] = auth.Final{Source: "FLINK", Decision: "APPROVE"}
+			if i >= 949 && i < 980 {
+				finals[i].Decision = "DECLINE"
+				finals[i].Reason = "CARD_TESTING"
+			}
+			if i < 10 {
+				finals[i].Source = "STAND_IN"
+			}
+		}
+		assertInstalledDecisions(t, authorize.Summary{Completed: 1000, Offered: 1000, StandIn: 10}, finals)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestInstalledDecisionsRejectOnePercent$")
+	cmd.Env = append(os.Environ(), "SWIPELINE_TEST_ONE_PERCENT=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "stand-in budget exceeded: 10/1000") {
+		t.Fatalf("one-percent share was not rejected: %v\n%s", err, output)
 	}
 }

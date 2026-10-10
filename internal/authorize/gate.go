@@ -161,6 +161,6 @@ func Gate(before, after, mode string, target time.Duration) (Verdict, error) {
 	}
 	v.Samples = int64(total)
 	v.StandInShare = stand / finals
-	v.Pass = v.P99 <= target && v.StandInShare <= 0.01
+	v.Pass = v.P99 <= target && v.StandInShare < 0.01
 	return v, nil
 }

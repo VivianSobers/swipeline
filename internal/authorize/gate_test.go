@@ -31,7 +31,7 @@ func TestGateBudgetDeltas(t *testing.T) {
 		{"within budget", 980, 1000, 1000, 5, true, 0.0375},
 		{"slow", 0, 0, 990, 0, false, 0.1},
 		{"stand ins", 980, 1000, 1000, 50, false, 0.0375},
-		{"one percent", 980, 1000, 1000, 10, true, 0.0375},
+		{"one percent", 980, 1000, 1000, 10, false, 0.0375},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := Gate(before, gateScrape(tc.fast, tc.within, tc.slow, tc.stand, 500), "latency", 50*time.Millisecond)
