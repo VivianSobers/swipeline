@@ -60,4 +60,23 @@ public final class Decision {
  }
  public static String transactionId(ObjectNode n) { return n.get("transaction_id").textValue(); }
  public static String decisionId(ObjectNode n) { return n.get("decision_id").textValue(); }
+
+ public static String hash(ObjectNode n) {
+  try {
+   byte[] canonical=Wire.JSON.writeValueAsBytes(sorted(n));
+   return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(canonical));
+  } catch (Exception e) { throw new IllegalArgumentException("INVALID_DECISION",e); }
+ }
+ private static JsonNode sorted(JsonNode n) {
+  if(n.isObject()) {
+   ObjectNode out=Wire.JSON.createObjectNode();
+   java.util.TreeSet<String> keys=new java.util.TreeSet<>(); n.fieldNames().forEachRemaining(keys::add);
+   for(String key:keys) out.set(key,sorted(n.get(key)));
+   return out;
+  }
+  if(n.isArray()) {
+   var out=Wire.JSON.createArrayNode(); for(JsonNode value:n) out.add(sorted(value)); return out;
+  }
+  return n;
+ }
 }

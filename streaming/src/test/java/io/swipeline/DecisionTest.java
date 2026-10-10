@@ -48,4 +48,19 @@ public class DecisionTest {
   n=fixture(); n.put("fraud_flags", "CARD_TESTING"); rejects(n);
   assertThrows(IllegalArgumentException.class, () -> Decision.parse(new byte[65537]));
  }
+
+ @Test public void canonicalHashSortsKeysAndDetectsEveryChange() throws Exception {
+  var n=fixture();
+  assertEquals("3569d2236369dad8c27fbe278ea3ff751cb02f9e9710d858683c96dc7b1db69b", Decision.hash(n));
+  var reordered=Wire.JSON.createObjectNode();
+  java.util.List<String> keys=new java.util.ArrayList<>(); n.fieldNames().forEachRemaining(keys::add);
+  java.util.Collections.reverse(keys); for(String k:keys) reordered.set(k,n.get(k));
+  assertEquals(Decision.hash(n),Decision.hash(reordered));
+  var amount=n.deepCopy(); amount.put("amount_minor", n.get("amount_minor").longValue()+1);
+  assertNotEquals(Decision.hash(n),Decision.hash(amount));
+  var reason=n.deepCopy(); reason.put("reason","OTHER"); assertNotEquals(Decision.hash(n),Decision.hash(reason));
+  var flags=n.deepCopy(); flags.withArray("fraud_flags").add("CARD_TESTING"); assertNotEquals(Decision.hash(n),Decision.hash(flags));
+  assertEquals(Decision.hash(Wire.parse("{\"z\":[{\"b\":1,\"a\":\"<&>\"}],\"a\":0}")),
+               Decision.hash(Wire.parse("{\"a\":0,\"z\":[{\"a\":\"<&>\",\"b\":1}]}")));
+ }
 }
