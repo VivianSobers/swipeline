@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
 	"time"
 
@@ -20,7 +21,8 @@ const ReplyPollRecords = 256
 // without waiting for any streaming checkpoint. Each poll's records are
 // arbitrated concurrently, so they share database batches; offsets are
 // committed only once every record is final or dead-lettered. Any other
-// error stops the loop with offsets uncommitted, so a restart redelivers.
+// error retries the same records with offsets uncommitted until the loop
+// context ends. Repeated proposals preserve the stored final outcome.
 func Replies(ctx context.Context, s *gateway.Service, c, p *kgo.Client) (err error) {
 	defer func() {
 		if ctx.Err() != nil {
@@ -32,9 +34,6 @@ func Replies(ctx context.Context, s *gateway.Service, c, p *kgo.Client) (err err
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := fetch.Err(); err != nil {
-			return err
-		}
 		records := fetch.Records()
 		errs := make([]error, len(records))
 		var wg sync.WaitGroup
@@ -42,7 +41,7 @@ func Replies(ctx context.Context, s *gateway.Service, c, p *kgo.Client) (err err
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				errs[i] = arbitrate(ctx, s, p, r)
+				errs[i] = retryReply(ctx, func() error { return arbitrate(ctx, s, p, r) })
 			}()
 		}
 		wg.Wait()
@@ -50,9 +49,36 @@ func Replies(ctx context.Context, s *gateway.Service, c, p *kgo.Client) (err err
 			return err
 		}
 		if len(records) > 0 {
-			if err := c.CommitRecords(ctx, records...); err != nil {
+			if err := retryReply(ctx, func() error { return c.CommitRecords(ctx, records...) }); err != nil {
 				return err
 			}
+		}
+		// A fetch may contain both records and partition errors. Process the
+		// records before polling again, and back off on errors without skipping them.
+		if fetch.Err() != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
+}
+
+// retryReply retains the operation in this poll until it succeeds. In particular,
+// a failed arbitration is never followed by a commit or a poll past its record.
+func retryReply(ctx context.Context, operation func() error) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := operation(); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
 		}
 	}
 }
@@ -68,7 +94,8 @@ func arbitrate(ctx context.Context, s *gateway.Service, p *kgo.Client, r *kgo.Re
 		defer cancel()
 		for {
 			_, err = s.Finals.Submit(call, store.Choice{ID: proposal.TransactionID, Proposal: &proposal}, time.Now())
-			if !errors.Is(err, gateway.ErrBusy) {
+			var timeout net.Error
+			if !errors.Is(err, gateway.ErrBusy) && !errors.Is(err, context.DeadlineExceeded) && !(errors.As(err, &timeout) && timeout.Timeout()) {
 				break
 			}
 			select {

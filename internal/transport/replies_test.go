@@ -144,3 +144,84 @@ func TestRepliesCancellationDuringArbitration(t *testing.T) {
 		t.Fatalf("reply loop returned %T: %v; want plain context.Canceled", err, err)
 	}
 }
+
+// A slow finalization batch must not terminate the consumer or lose its record.
+func TestRepliesRetryFinalizationTimeouts(t *testing.T) {
+	for _, delay := range []time.Duration{0, 1100 * time.Millisecond} {
+		t.Run(delay.String(), func(t *testing.T) {
+			s, brokers := live(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			row := admitted(t, s, time.Now().Add(time.Minute))
+			proposal := auth.Proposal{Request: row.Request, ProposalID: contract.ID(row.Request.TransactionID, "proposal"), Decision: "APPROVE", Reason: "RULES_CLEAR", Flags: []string{}, Usual: 100, Scored: row.Request.Received}
+			data, err := json.Marshal(proposal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p, err := Producer(brokers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer p.Close()
+			record := &kgo.Record{Topic: "swipeline.auth.proposals.v1", Key: []byte(row.Request.TransactionID), Value: data}
+			record.Partition = auth.Partition(record.Key)
+			if err = p.ProduceSync(ctx, record).FirstErr(); err != nil {
+				t.Fatal(err)
+			}
+			c, err := Consumer(brokers, "timeout-"+contract.ID(t.Name(), time.Now().String())[:12], func() {})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			var first time.Time
+			attempts := 0
+			service := &gateway.Service{Finals: gateway.NewQueue(ctx, ReplyPollRecords, func(call context.Context, values []store.Choice) ([]store.Row, error) {
+				for _, value := range values {
+					if value.ID != row.Request.TransactionID {
+						continue
+					}
+					attempts++
+					if first.IsZero() {
+						first = time.Now()
+					}
+					if attempts <= 3 || time.Since(first) < delay {
+						return nil, context.DeadlineExceeded
+					}
+				}
+				return s.Finalize(call, values)
+			})}
+			run, stop := context.WithCancel(ctx)
+			defer stop()
+			done := make(chan error, 1)
+			go func() { done <- Replies(run, service, c, p) }()
+			for {
+				got, err := s.Lookup(ctx, row.Request.TransactionID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Final != nil {
+					if got.Final.Source != "FLINK" || got.Final.Decision != "APPROVE" {
+						t.Fatalf("wrong final: %+v", got.Final)
+					}
+					break
+				}
+				select {
+				case err := <-done:
+					t.Fatalf("reply loop stopped before arbitration: %v", err)
+				case <-ctx.Done():
+					t.Fatal("proposal never arbitrated")
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("reply loop stopped after arbitration: %v", err)
+			case <-time.After(100 * time.Millisecond):
+			}
+			stop()
+			if err := <-done; err != context.Canceled {
+				t.Fatalf("reply loop: %v", err)
+			}
+		})
+	}
+}
