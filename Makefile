@@ -28,4 +28,4 @@ streaming-check:
 	docker build -f deploy/streaming.Dockerfile -t swipeline-streaming:m2 .
 .PHONY: m2-demo
 m2-demo:
-	@set -eu; project=swipeline-m2-demo-$$$$; export SWIPELINE_HTTP_PORT=0 SWIPELINE_PROM_PORT=0 SWIPELINE_GATEWAY_PORT=0 SWIPELINE_FLINK_PORT=0; trap 'rc=$$?; if [ $$rc -ne 0 ]; then docker compose -p "$$project" logs --no-color --tail 200; fi; docker compose -p "$$project" down -v --remove-orphans; exit $$rc' EXIT; docker compose -p "$$project" up -d --build --wait; ready=0; for attempt in $$(seq 1 60); do if docker compose -p "$$project" exec -T flink-jobmanager curl -fsS --max-time 2 http://gateway:8081/readyz; then ready=1; break; fi; sleep 1; done; test "$$ready" = 1; docker run --rm --memory=768m --cpus=2 --network "$${project}_default" --user "$$(id -u):$$(id -g)" -e GOMEMLIMIT=512MiB -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false -e SWIPELINE_TEST_GATEWAY=http://gateway:8081 -v "$(CURDIR):/src:ro,z" -w /src $(GO_IMAGE) go test ./tests -run '^TestInstalledAuthorization$$' -count=1 -v
+	@sh tests/m2-demo.sh
