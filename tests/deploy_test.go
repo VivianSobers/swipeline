@@ -11,6 +11,8 @@ import (
 )
 
 type service struct {
+	Entrypoint  []string `json:"entrypoint"`
+	Command     []string `json:"command"`
 	Image       string   `json:"image"`
 	MemLimit    int64    `json:"mem_limit,string"`
 	Profiles    []string `json:"profiles"`
@@ -206,5 +208,22 @@ func TestRenderedAuthorizationReadiness(t *testing.T) {
 				t.Fatalf("healthy=%v want %v: %s %v", err == nil, tc.healthy, out, err)
 			}
 		})
+	}
+}
+
+func TestRenderedJobManagerRestoreEntrypoint(t *testing.T) {
+	s := rendered(t)["flink-jobmanager"]
+	if strings.Join(s.Entrypoint, " ") != "sh /opt/swipeline/flink-start.sh" {
+		t.Fatalf("restore entrypoint missing: %q", s.Entrypoint)
+	}
+	if strings.Join(s.Command, " ") != "standalone-job --job-classname io.swipeline.Authorization" {
+		t.Fatalf("authorization command changed: %q", s.Command)
+	}
+	data, err := os.ReadFile("../deploy/streaming.Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "COPY --chown=flink:flink deploy/flink-start.sh /opt/swipeline/flink-start.sh") {
+		t.Fatal("streaming image does not install the restore entrypoint")
 	}
 }
