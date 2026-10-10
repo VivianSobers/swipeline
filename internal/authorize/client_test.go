@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/VivianSobers/swipeline/internal/auth"
 	"github.com/VivianSobers/swipeline/internal/contract"
@@ -100,5 +103,77 @@ func TestSendRejectsConflictsAndForeignFinals(t *testing.T) {
 	status = http.StatusOK
 	if _, err := c.Send(context.Background(), e); err == nil {
 		t.Fatal("final for another transaction accepted")
+	}
+}
+
+func TestSendWaitsForDurableFinal(t *testing.T) {
+	start := time.Now()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if time.Since(start) < 1500*time.Millisecond {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(final("id"))
+	}))
+	defer s.Close()
+	c := Client{Base: s.URL, HTTP: s.Client()}
+	f, err := c.Send(context.Background(), contract.Event{Business: contract.Business{TransactionID: "id"}})
+	if err != nil || f.DecisionID != "final" {
+		t.Fatalf("durable final not resolved: %v %v", f, err)
+	}
+}
+
+func TestSendBudgetBoundsUnresolved(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		} else {
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+	defer s.Close()
+	c := Client{Base: s.URL, HTTP: s.Client()}
+	// Reflection lets the regression run against the client before the field exists.
+	field := reflect.ValueOf(&c).Elem().FieldByName("RetryBudget")
+	if !field.IsValid() {
+		t.Fatal("client has no configurable retry budget")
+	}
+	budget := 80 * time.Millisecond
+	field.SetInt(int64(budget))
+	start := time.Now()
+	_, err := c.Send(context.Background(), contract.Event{Business: contract.Business{TransactionID: "id"}})
+	elapsed := time.Since(start)
+	if err == nil || !strings.Contains(err.Error(), "unresolved authorization id:") {
+		t.Fatalf("got %v", err)
+	}
+	if elapsed < budget || elapsed > budget+500*time.Millisecond {
+		t.Fatalf("budget=%s elapsed=%s", budget, elapsed)
+	}
+}
+
+func TestSendLostReplyPollsKnownPending(t *testing.T) {
+	var posts, gets atomic.Int32
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			posts.Add(1)
+			conn, _, _ := w.(http.Hijacker).Hijack()
+			_ = conn.Close()
+			return
+		}
+		if gets.Add(1) < 3 {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(final("id"))
+	}))
+	defer s.Close()
+	c := Client{Base: s.URL, HTTP: s.Client()}
+	_, err := c.Send(context.Background(), contract.Event{Business: contract.Business{TransactionID: "id"}})
+	if err != nil || posts.Load() != 1 {
+		t.Fatalf("known pending transaction resubmitted: posts=%d err=%v", posts.Load(), err)
 	}
 }
