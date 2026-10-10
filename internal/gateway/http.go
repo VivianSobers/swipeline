@@ -24,6 +24,7 @@ type Service struct {
 	Finals        *Queue[store.Choice]
 	Deadlines     *Queue[store.Choice]
 	ConsumerReady atomic.Bool
+	ReplyRetries  atomic.Uint64
 	// Outbox receives a signal whenever new outbox rows commit.
 	Outbox chan struct{}
 

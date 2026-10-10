@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -29,6 +30,12 @@ func Replies(ctx context.Context, s *gateway.Service, c, p *kgo.Client) (err err
 			err = ctx.Err()
 		}
 	}()
+	reports := replyReports{service: s, out: os.Stderr, last: map[string]time.Time{}}
+	report := func(err error) {
+		if ctx.Err() == nil {
+			reports.retry(err, time.Now())
+		}
+	}
 	for {
 		fetch := c.PollRecords(ctx, ReplyPollRecords)
 		if err := ctx.Err(); err != nil {
@@ -41,7 +48,7 @@ func Replies(ctx context.Context, s *gateway.Service, c, p *kgo.Client) (err err
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				errs[i] = retryReply(ctx, func() error { return arbitrate(ctx, s, p, r) })
+				errs[i] = retryReply(ctx, report, func() error { return arbitrate(ctx, s, p, r, report) })
 			}()
 		}
 		wg.Wait()
@@ -49,13 +56,16 @@ func Replies(ctx context.Context, s *gateway.Service, c, p *kgo.Client) (err err
 			return err
 		}
 		if len(records) > 0 {
-			if err := retryReply(ctx, func() error { return c.CommitRecords(ctx, records...) }); err != nil {
+			if err := retryReply(ctx, report, func() error { return c.CommitRecords(ctx, records...) }); err != nil {
 				return err
 			}
 		}
 		// A fetch may contain both records and partition errors. Process the
 		// records before polling again, and back off on errors without skipping them.
 		if fetch.Err() != nil {
+			for _, failure := range fetch.Errors() {
+				report(failure.Err)
+			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -67,13 +77,15 @@ func Replies(ctx context.Context, s *gateway.Service, c, p *kgo.Client) (err err
 
 // retryReply retains the operation in this poll until it succeeds. In particular,
 // a failed arbitration is never followed by a commit or a poll past its record.
-func retryReply(ctx context.Context, operation func() error) error {
+func retryReply(ctx context.Context, report func(error), operation func() error) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if err := operation(); err == nil {
 			return nil
+		} else {
+			report(err)
 		}
 		select {
 		case <-ctx.Done():
@@ -86,7 +98,7 @@ func retryReply(ctx context.Context, operation func() error) error {
 // arbitrate finalizes one reply, or dead-letters it if it is malformed,
 // names an unknown transaction, or conflicts with the admitted request. A
 // proposal after the deadline is not an error: the stored stand-in stands.
-func arbitrate(ctx context.Context, s *gateway.Service, p *kgo.Client, r *kgo.Record) error {
+func arbitrate(ctx context.Context, s *gateway.Service, p *kgo.Client, r *kgo.Record, report func(error)) error {
 	code := "INVALID_PROPOSAL"
 	proposal, err := Proposal(r.Value)
 	if err == nil {
@@ -98,6 +110,10 @@ func arbitrate(ctx context.Context, s *gateway.Service, p *kgo.Client, r *kgo.Re
 			if !errors.Is(err, gateway.ErrBusy) && !errors.Is(err, context.DeadlineExceeded) && !(errors.As(err, &timeout) && timeout.Timeout()) {
 				break
 			}
+			if call.Err() != nil {
+				return call.Err()
+			}
+			report(err)
 			select {
 			case <-call.Done():
 				return call.Err()

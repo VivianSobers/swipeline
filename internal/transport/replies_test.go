@@ -5,6 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -223,5 +229,102 @@ func TestRepliesRetryFinalizationTimeouts(t *testing.T) {
 				t.Fatalf("reply loop: %v", err)
 			}
 		})
+	}
+}
+
+func TestRepliesReportRetriedErrors(t *testing.T) {
+	s, brokers := live(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	row := admitted(t, s, time.Now().Add(time.Minute))
+	proposal := auth.Proposal{Request: row.Request, ProposalID: contract.ID(row.Request.TransactionID, "proposal"), Decision: "APPROVE", Reason: "RULES_CLEAR", Flags: []string{}, Usual: 100, Scored: row.Request.Received}
+	data, err := json.Marshal(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := Producer(brokers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	record := &kgo.Record{Topic: "swipeline.auth.proposals.v1", Key: []byte(row.Request.TransactionID), Value: data}
+	record.Partition = auth.Partition(record.Key)
+	if err = p.ProduceSync(ctx, record).FirstErr(); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Consumer(brokers, "report-"+contract.ID(t.Name(), time.Now().String())[:12], func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	service := gateway.New(ctx, s)
+	var attempts atomic.Int32
+	// A failed batch can be applied once more per item before Submit returns.
+	// Six apply failures guarantee at least three observable reply retries.
+	failure := errors.New("finalization unavailable for retry test")
+	service.Finals = gateway.NewQueue(ctx, ReplyPollRecords, func(call context.Context, values []store.Choice) ([]store.Row, error) {
+		for _, value := range values {
+			if value.ID == row.Request.TransactionID && attempts.Add(1) <= 6 {
+				return nil, failure
+			}
+		}
+		return s.Finalize(call, values)
+	})
+	output, err := os.CreateTemp(t.TempDir(), "reply-stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	originalStderr := os.Stderr
+	os.Stderr = output
+	defer func() { os.Stderr = originalStderr }()
+	run, stop := context.WithCancel(ctx)
+	defer stop()
+	done := make(chan error, 1)
+	go func() { done <- Replies(run, service, c, p) }()
+	for {
+		got, err := s.Lookup(ctx, row.Request.TransactionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Final != nil {
+			if got.Final.Source != "FLINK" || got.Final.Decision != "APPROVE" {
+				t.Fatalf("wrong final: %+v", got.Final)
+			}
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("reply loop ended: %v", err)
+		case <-ctx.Done():
+			t.Fatal("record never arbitrated")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	stop()
+	if err = <-done; err != context.Canceled {
+		t.Fatalf("reply loop: %v", err)
+	}
+	logs, err := os.ReadFile(output.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(string(logs), failure.Error()); count != 1 {
+		t.Errorf("want one rate-limited stderr report, got %d: %s", count, logs)
+	}
+	metrics := httptest.NewRecorder()
+	service.Handler().ServeHTTP(metrics, httptest.NewRequest("GET", "/metrics", nil))
+	found := false
+	for _, line := range strings.Split(metrics.Body.String(), "\n") {
+		var count uint64
+		if _, err := fmt.Sscanf(line, "swipeline_gateway_reply_retries_total %d", &count); err == nil && count >= 3 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("missing retry counter >=3 in metrics:\n%s", metrics.Body.String())
+	}
+	if attempts.Load() < 7 {
+		t.Fatalf("record was not retried to success: %d", attempts.Load())
 	}
 }

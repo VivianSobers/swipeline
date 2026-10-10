@@ -114,6 +114,9 @@ func (s *Service) metrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "swipeline_gateway_latency_target_seconds{deadline_mode=%q} %g\n", mode, targets[mode].Seconds())
 	}
 	s.counts.write(w)
+	fmt.Fprintln(w, "# HELP swipeline_gateway_reply_retries_total Reply operations retried after an error.")
+	fmt.Fprintln(w, "# TYPE swipeline_gateway_reply_retries_total counter")
+	fmt.Fprintf(w, "swipeline_gateway_reply_retries_total %d\n", s.ReplyRetries.Load())
 	ctx, cancel := context.WithTimeout(r.Context(), time.Second)
 	defer cancel()
 	b, err := s.DB.Backlog(ctx)
