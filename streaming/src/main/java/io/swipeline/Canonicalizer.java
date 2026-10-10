@@ -12,13 +12,18 @@ import org.apache.flink.util.OutputTag;
 public class Canonicalizer extends KeyedProcessFunction<String,DecisionRecord,byte[]> {
  public static final OutputTag<byte[]> DLQ=new OutputTag<byte[]>("canonical-dlq"){};
  private transient ValueState<String> hash;
+ private transient org.apache.flink.metrics.Counter emitted, duplicates;
  @Override public void open(OpenContext context) throws Exception {
+  emitted=getRuntimeContext().getMetricGroup().counter("canonical_emitted");
+  duplicates=getRuntimeContext().getMetricGroup().counter("canonical_duplicates");
   hash=getRuntimeContext().getState(new ValueStateDescriptor<>("decision-hash",Types.STRING));
  }
  @Override public void processElement(DecisionRecord record,Context ctx,Collector<byte[]> out) throws Exception {
   var n=Decision.parse(record.value());
-  hash.update(Decision.hash(n));
+  String incoming=Decision.hash(n);
+  if(incoming.equals(hash.value())) {duplicates.inc(); return;}
+  hash.update(incoming);
   out.collect(record.value());
-  getRuntimeContext().getMetricGroup().counter("canonical_emitted").inc();
+  emitted.inc();
  }
 }

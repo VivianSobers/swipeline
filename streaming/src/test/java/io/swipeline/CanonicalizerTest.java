@@ -30,4 +30,22 @@ public class CanonicalizerTest {
    assertEquals(Decision.hash(Decision.parse(raw)),state(h));
   }
  }
+
+ static long counter(Canonicalizer op,String name) throws Exception {
+  var field=Canonicalizer.class.getDeclaredField(name); field.setAccessible(true);
+  return ((org.apache.flink.metrics.Counter)field.get(op)).getCount();
+ }
+ @Test public void identicalAndReorderedDuplicatesAreDropped() throws Exception {
+  var op=new Canonicalizer();
+  try(var h=harness(op)) {
+   h.open(); byte[] raw=DecisionTest.fixture("decision.json");
+   h.processElement(new StreamRecord<>(record(raw)));h.processElement(new StreamRecord<>(record(raw)));
+   var n=Decision.parse(raw);var reordered=Wire.JSON.createObjectNode();
+   var keys=new java.util.ArrayList<String>(); n.fieldNames().forEachRemaining(keys::add); java.util.Collections.reverse(keys);
+   for(String key:keys)reordered.set(key,n.get(key));
+   h.processElement(new StreamRecord<>(record(Wire.JSON.writeValueAsBytes(reordered))));
+   assertEquals(1,h.getOutput().size()); assertEquals(2,counter(op,"duplicates"));
+   assertTrue(h.getSideOutput(Canonicalizer.DLQ)==null || h.getSideOutput(Canonicalizer.DLQ).isEmpty());
+  }
+ }
 }
