@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/VivianSobers/swipeline/internal/auth"
+	"github.com/VivianSobers/swipeline/internal/lifecycle"
 	"github.com/VivianSobers/swipeline/internal/store"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -193,6 +194,17 @@ func (s *Service) Handler() http.Handler {
 		}
 		reply(w, http.StatusOK, run)
 	})
+	m.HandleFunc("GET /v1/runs/{id}/counts", func(w http.ResponseWriter, r *http.Request) {
+		counts, err := s.DB.Counts(r.Context(), r.PathValue("id"))
+		if errors.Is(err, sql.ErrNoRows) {
+			failure(w, http.StatusNotFound, "UNKNOWN_RUN")
+			return
+		} else if err != nil {
+			failure(w, http.StatusServiceUnavailable, "RETRY")
+			return
+		}
+		reply(w, http.StatusOK, counts)
+	})
 	m.HandleFunc("POST /v1/authorizations", s.authorize)
 	m.HandleFunc("GET /v1/authorizations/{id}", func(w http.ResponseWriter, r *http.Request) {
 		row, err := s.DB.Lookup(r.Context(), r.PathValue("id"))
@@ -209,7 +221,48 @@ func (s *Service) Handler() http.Handler {
 		}
 		reply(w, http.StatusOK, row.Final)
 	})
+	m.HandleFunc("POST /v1/lifecycle", s.lifecycle)
 	return m
+}
+
+// lifecycle admits a lifecycle transition event (clear, reverse, chargeback),
+// returning an admission receipt or error code.
+func (s *Service) lifecycle(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 16384))
+	if err != nil {
+		failure(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	e, err := lifecycle.Decode(data)
+	if err != nil {
+		failure(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	idempKey := r.Header.Get("Idempotency-Key")
+	if idempKey == "" || idempKey != e.EventID {
+		failure(w, http.StatusBadRequest, "INVALID_IDEMPOTENCY_KEY")
+		return
+	}
+	if s.DB == nil {
+		failure(w, http.StatusServiceUnavailable, "RETRY")
+		return
+	}
+	receipt, err := s.DB.ReceiveLifecycle(r.Context(), e)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrUnknownTransaction):
+			failure(w, http.StatusNotFound, "UNKNOWN_TRANSACTION")
+		case errors.Is(err, store.ErrDeclinedLifecycle) || errors.Is(err, store.ErrLifecycleMismatch):
+			failure(w, http.StatusBadRequest, "INVALID_LIFECYCLE")
+		case errors.Is(err, store.ErrLifecycleConflict):
+			failure(w, http.StatusConflict, "LIFECYCLE_CONFLICT")
+		default:
+			failure(w, http.StatusServiceUnavailable, "RETRY")
+		}
+		return
+	}
+	s.Wake()
+	reply(w, http.StatusAccepted, receipt)
 }
 
 // authorize admits one request and answers within its deadline mode's
