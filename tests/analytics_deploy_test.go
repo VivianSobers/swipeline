@@ -143,3 +143,122 @@ func TestRenderedAnalyticsProfileTopology(t *testing.T) {
 		}
 	}
 }
+
+func TestCanonicalSupervisorSpec(t *testing.T) {
+	path := "deploy/druid/supervisor.json"
+	if _, err := os.Stat(path); err != nil {
+		path = "../deploy/druid/supervisor.json"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var doc struct {
+		Type string `json:"type"`
+		Spec struct {
+			DataSchema struct {
+				DataSource    string `json:"dataSource"`
+				TimestampSpec struct {
+					Column string `json:"column"`
+					Format string `json:"format"`
+				} `json:"timestampSpec"`
+				DimensionsSpec struct {
+					Dimensions []any `json:"dimensions"`
+				} `json:"dimensionsSpec"`
+				GranularitySpec struct {
+					Rollup bool `json:"rollup"`
+				} `json:"granularitySpec"`
+			} `json:"dataSchema"`
+			IoConfig struct {
+				Topic              string            `json:"topic"`
+				UseEarliestOffset  bool              `json:"useEarliestOffset"`
+				TaskCount          int               `json:"taskCount"`
+				Replicas           int               `json:"replicas"`
+				ConsumerProperties map[string]string `json:"consumerProperties"`
+			} `json:"ioConfig"`
+			TuningConfig struct {
+				MaxParseExceptions int `json:"maxParseExceptions"`
+			} `json:"tuningConfig"`
+		} `json:"spec"`
+	}
+
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("failed to parse supervisor.json: %v", err)
+	}
+
+	if doc.Spec.IoConfig.Topic != "swipeline.decisions.v1" {
+		t.Errorf("expected topic swipeline.decisions.v1, got %q", doc.Spec.IoConfig.Topic)
+	}
+	if doc.Spec.IoConfig.ConsumerProperties["isolation.level"] != "read_committed" {
+		t.Errorf("expected isolation.level read_committed, got %q", doc.Spec.IoConfig.ConsumerProperties["isolation.level"])
+	}
+	if !doc.Spec.IoConfig.UseEarliestOffset {
+		t.Errorf("expected useEarliestOffset true")
+	}
+	if doc.Spec.IoConfig.TaskCount != 1 {
+		t.Errorf("expected taskCount 1, got %d", doc.Spec.IoConfig.TaskCount)
+	}
+	if doc.Spec.IoConfig.Replicas != 1 {
+		t.Errorf("expected replicas 1, got %d", doc.Spec.IoConfig.Replicas)
+	}
+	if doc.Spec.DataSchema.GranularitySpec.Rollup {
+		t.Errorf("expected rollup false")
+	}
+	if doc.Spec.TuningConfig.MaxParseExceptions != 0 {
+		t.Errorf("expected maxParseExceptions 0, got %d", doc.Spec.TuningConfig.MaxParseExceptions)
+	}
+	if doc.Spec.DataSchema.TimestampSpec.Column != "finalized_at_ms" || doc.Spec.DataSchema.TimestampSpec.Format != "millis" {
+		t.Errorf("expected timestamp finalized_at_ms millis, got %+v", doc.Spec.DataSchema.TimestampSpec)
+	}
+
+	dims := doc.Spec.DataSchema.DimensionsSpec.Dimensions
+	for _, d := range dims {
+		switch v := d.(type) {
+		case string:
+			if v == "card_token" {
+				t.Errorf("prohibited dimension card_token found")
+			}
+		case map[string]any:
+			if v["name"] == "card_token" {
+				t.Errorf("prohibited dimension card_token found")
+			}
+		}
+	}
+
+	expectedDimensions := []any{
+		"run_id", "transaction_id", "decision_id", "merchant_id", "mcc",
+		"issuer_bank_id", "acquirer_bank_id", "currency", "decision", "reason",
+		"decision_source", "rule_version", "reference_version", "fraud_flags",
+		"features_late",
+		map[string]any{"name": "amount_minor", "type": "long"},
+		map[string]any{"name": "event_time_ms", "type": "long"},
+		map[string]any{"name": "decision_latency_ms", "type": "double"},
+		map[string]any{"name": "score", "type": "long"},
+		map[string]any{"name": "velocity_60s", "type": "long"},
+		map[string]any{"name": "spend_ratio", "type": "double"},
+		map[string]any{"name": "merchant_distinct_estimate", "type": "double"},
+	}
+
+	if len(dims) != len(expectedDimensions) {
+		t.Fatalf("expected %d dimensions, got %d", len(expectedDimensions), len(dims))
+	}
+	for i, want := range expectedDimensions {
+		got := dims[i]
+		switch w := want.(type) {
+		case string:
+			if got != w {
+				t.Errorf("dimension %d: want %v, got %v", i, w, got)
+			}
+		case map[string]any:
+			gm, ok := got.(map[string]any)
+			if !ok {
+				t.Errorf("dimension %d: want %v, got %v", i, w, got)
+				continue
+			}
+			if gm["name"] != w["name"] || gm["type"] != w["type"] {
+				t.Errorf("dimension %d: want %v, got %v", i, w, gm)
+			}
+		}
+	}
+}
