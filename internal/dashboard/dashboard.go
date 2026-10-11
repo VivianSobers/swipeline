@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"archive/zip"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -114,4 +115,38 @@ func GenerateCharts(queriesDir, chartsDir string, chartNames ...string) error {
 		}
 	}
 	return nil
+}
+
+func BuildBundleZip(srcDir, zipPath string) error {
+	outFile, err := os.Create(zipPath)
+	if err != nil {
+		return err
+	}
+	defer outFile.Close()
+
+	w := zip.NewWriter(outFile)
+	defer w.Close()
+
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+		f, err := w.Create(rel)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		_, err = f.Write(data)
+		return err
+	})
 }

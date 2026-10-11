@@ -46,4 +46,10 @@ superset-check:
 .PHONY: superset-password
 superset-password:
 	docker compose exec -T superset cat /secrets/admin-password
+.PHONY: dashboards
+dashboards:
+	docker run --rm --user "$$(id -u):$$(id -g)" -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false -v "$(CURDIR):/src:z" -w /src $(GO_IMAGE) go run ./tools/dashboard
+.PHONY: dashboard-bundle
+dashboard-bundle:
+	docker run --rm --user "$$(id -u):$$(id -g)" -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false -v "$(CURDIR):/src:z" -w /src $(GO_IMAGE) go run ./tools/dashboard -bundle
 

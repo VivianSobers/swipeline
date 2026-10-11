@@ -6,4 +6,5 @@ COPY deploy/superset/superset_config.py /app/pythonpath/superset_config.py
 COPY deploy/superset/test_config.py /app/test_config.py
 COPY deploy/superset/init.sh /app/init.sh
 RUN chmod +x /app/init.sh
+COPY dashboards/payments-operations.zip /app/dashboards/payments-operations.zip
 USER superset

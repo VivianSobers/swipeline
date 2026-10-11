@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"archive/zip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -329,5 +330,86 @@ func TestLatencyAndFreshnessCharts(t *testing.T) {
 		if name == "freshness" && !strings.Contains(got, "approximate distinct cards in recent 60 seconds") {
 			t.Errorf("freshness chart description missing merchant_distinct_estimate label")
 		}
+	}
+}
+
+func TestPaymentsOperationsDashboard(t *testing.T) {
+	dashPath := "dashboards/payments-operations/dashboards/payments_operations.yaml"
+	if _, err := os.Stat(dashPath); err != nil {
+		dashPath = "../dashboards/payments-operations/dashboards/payments_operations.yaml"
+	}
+	data, err := os.ReadFile(dashPath)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", dashPath, err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "dashboard_title: Payments Operations") {
+		t.Errorf("missing dashboard_title: Payments Operations")
+	}
+	if !strings.Contains(content, "slug: payments-operations") {
+		t.Errorf("missing slug: payments-operations")
+	}
+	if !strings.Contains(content, "refresh_frequency: 5") {
+		t.Errorf("missing refresh_frequency: 5")
+	}
+
+	for _, filter := range []string{"run_id", "event_time_ms"} {
+		if !strings.Contains(content, filter) {
+			t.Errorf("missing native filter for %s", filter)
+		}
+	}
+
+	chartsDir := "dashboards/payments-operations/charts"
+	if _, err := os.Stat(chartsDir); err != nil {
+		chartsDir = "../dashboards/payments-operations/charts"
+	}
+
+	for _, def := range dashboard.ChartDefinitions {
+		if !strings.Contains(content, def.UUID) {
+			t.Errorf("dashboard missing reference to chart UUID %s (%s)", def.UUID, def.Name)
+		}
+		chartFile := filepath.Join(chartsDir, def.Name+".yaml")
+		if _, err := os.Stat(chartFile); err != nil {
+			t.Errorf("referenced chart file %s does not exist: %v", chartFile, err)
+		}
+	}
+}
+
+func TestDashboardBundleZip(t *testing.T) {
+	zipPath := "dashboards/payments-operations.zip"
+	if _, err := os.Stat(zipPath); err != nil {
+		zipPath = "../dashboards/payments-operations.zip"
+	}
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatalf("failed to open bundle zip: %v", err)
+	}
+	defer reader.Close()
+
+	foundMeta := false
+	for _, f := range reader.File {
+		if f.Name == "metadata.yaml" || f.Name == "payments-operations/metadata.yaml" {
+			foundMeta = true
+			break
+		}
+	}
+	if !foundMeta {
+		t.Errorf("metadata.yaml not found at expected path in bundle zip")
+	}
+}
+
+func TestSupersetDockerfileCopiesBundle(t *testing.T) {
+	path := "deploy/superset.Dockerfile"
+	if _, err := os.Stat(path); err != nil {
+		path = "../deploy/superset.Dockerfile"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "COPY dashboards/payments-operations.zip /app/dashboards/payments-operations.zip") {
+		t.Errorf("superset.Dockerfile does not copy payments-operations.zip")
 	}
 }

@@ -1,0 +1,193 @@
+dashboard_title: Payments Operations
+description: null
+css: ''
+slug: payments-operations
+uuid: e4b3c2a1-0000-4000-8000-000000000020
+position:
+  CHART-tps:
+    children: []
+    id: CHART-tps
+    meta:
+      chartId: 1
+      height: 50
+      sliceName: Throughput (TPS)
+      uuid: e4b3c2a1-0000-4000-8000-000000000011
+      width: 6
+    parents:
+      - ROOT_ID
+      - GRID_ID
+      - ROW-1
+    type: CHART
+  CHART-approval_rate:
+    children: []
+    id: CHART-approval_rate
+    meta:
+      chartId: 2
+      height: 50
+      sliceName: Approval Rate
+      uuid: e4b3c2a1-0000-4000-8000-000000000012
+      width: 6
+    parents:
+      - ROOT_ID
+      - GRID_ID
+      - ROW-1
+    type: CHART
+  CHART-decline_reasons:
+    children: []
+    id: CHART-decline_reasons
+    meta:
+      chartId: 3
+      height: 50
+      sliceName: Decline Reasons
+      uuid: e4b3c2a1-0000-4000-8000-000000000013
+      width: 6
+    parents:
+      - ROOT_ID
+      - GRID_ID
+      - ROW-2
+    type: CHART
+  CHART-fraud_flags_by_mcc:
+    children: []
+    id: CHART-fraud_flags_by_mcc
+    meta:
+      chartId: 4
+      height: 50
+      sliceName: Fraud Flags by MCC
+      uuid: e4b3c2a1-0000-4000-8000-000000000014
+      width: 6
+    parents:
+      - ROOT_ID
+      - GRID_ID
+      - ROW-2
+    type: CHART
+  CHART-latency:
+    children: []
+    id: CHART-latency
+    meta:
+      chartId: 5
+      height: 50
+      sliceName: Decision Latency
+      uuid: e4b3c2a1-0000-4000-8000-000000000015
+      width: 6
+    parents:
+      - ROOT_ID
+      - GRID_ID
+      - ROW-3
+    type: CHART
+  CHART-freshness:
+    children: []
+    id: CHART-freshness
+    meta:
+      chartId: 6
+      height: 50
+      sliceName: Freshness and Integrity
+      uuid: e4b3c2a1-0000-4000-8000-000000000016
+      width: 6
+    parents:
+      - ROOT_ID
+      - GRID_ID
+      - ROW-3
+    type: CHART
+  DASHBOARD_VERSION_KEY: v2
+  GRID_ID:
+    children:
+      - ROW-1
+      - ROW-2
+      - ROW-3
+    id: GRID_ID
+    parents:
+      - ROOT_ID
+    type: GRID
+  HEADER_ID:
+    id: HEADER_ID
+    meta:
+      text: Payments Operations
+    type: HEADER
+  ROOT_ID:
+    children:
+      - GRID_ID
+    id: ROOT_ID
+    type: ROOT
+  ROW-1:
+    children:
+      - CHART-tps
+      - CHART-approval_rate
+    id: ROW-1
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+      - ROOT_ID
+      - GRID_ID
+    type: ROW
+  ROW-2:
+    children:
+      - CHART-decline_reasons
+      - CHART-fraud_flags_by_mcc
+    id: ROW-2
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+      - ROOT_ID
+      - GRID_ID
+    type: ROW
+  ROW-3:
+    children:
+      - CHART-latency
+      - CHART-freshness
+    id: ROW-3
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+      - ROOT_ID
+      - GRID_ID
+    type: ROW
+metadata:
+  refresh_frequency: 5
+  timed_refresh_immune_slices: []
+  expanded_slices: {}
+  color_scheme: null
+  label_colors: {}
+  shared_label_colors: {}
+  color_scheme_domain: []
+  cross_filters_enabled: false
+  native_filter_configuration:
+    - id: NATIVE_FILTER_RUN_ID
+      name: Run ID
+      filterType: filter_select
+      targets:
+        - datasetUuid: e4b3c2a1-0000-4000-8000-000000000002
+          column:
+            name: run_id
+      cascadeParentIds: []
+      scope:
+        rootPath:
+          - ROOT_ID
+        excluded: []
+      controlValues:
+        enableEmptyFilter: false
+        multiSelect: false
+    - id: NATIVE_FILTER_TIME_RANGE
+      name: Wall Time Range
+      filterType: filter_time
+      targets:
+        - datasetUuid: e4b3c2a1-0000-4000-8000-000000000002
+          column:
+            name: __time
+      cascadeParentIds: []
+      scope:
+        rootPath:
+          - ROOT_ID
+        excluded: []
+    - id: NATIVE_FILTER_EVENT_TIME
+      name: Business Day (event_time_ms)
+      filterType: filter_range
+      targets:
+        - datasetUuid: e4b3c2a1-0000-4000-8000-000000000002
+          column:
+            name: event_time_ms
+      cascadeParentIds: []
+      scope:
+        rootPath:
+          - ROOT_ID
+        excluded: []
+version: 1.0.0
