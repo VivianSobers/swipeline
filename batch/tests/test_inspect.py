@@ -118,6 +118,31 @@ class TestInspectTransaction(unittest.TestCase):
         self.assertEqual(parsed["status"], "CLEARED")
         self.assertEqual(parsed["amounts"]["cleared_amount"], 10000)
 
+    def test_inspect_transaction_filters_by_column_value(self):
+        import sys
+        import types
+
+        tx_id = "tx' OR '1'='1"
+        functions = types.ModuleType("pyspark.sql.functions")
+        functions.col = MagicMock(name="col")
+        spark = MagicMock()
+        df = spark.read.format.return_value.load.return_value
+        df.filter.return_value.collect.return_value = []
+        df.filter.return_value.orderBy.return_value.collect.return_value = []
+
+        with patch.dict(sys.modules, {
+            "pyspark": types.ModuleType("pyspark"),
+            "pyspark.sql": types.ModuleType("pyspark.sql"),
+            "pyspark.sql.functions": functions,
+        }), patch("batch.inspect.is_hudi_table", return_value=True):
+            inspect_transaction(spark, tx_id)
+
+        self.assertEqual(df.filter.call_count, 3)
+        for call in df.filter.call_args_list:
+            self.assertNotIsInstance(call.args[0], str)
+        functions.col.assert_called_with("transaction_id")
+        functions.col.return_value.__eq__.assert_called_with(tx_id)
+
 
 if __name__ == "__main__":
     unittest.main()
