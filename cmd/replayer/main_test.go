@@ -11,11 +11,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/VivianSobers/swipeline/internal/auth"
 	"github.com/VivianSobers/swipeline/internal/contract"
+	"github.com/VivianSobers/swipeline/internal/lifecycle"
 	"github.com/VivianSobers/swipeline/internal/preview"
 )
 
@@ -175,6 +177,18 @@ func TestAuthorizationReplayCLI(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 			return
 		}
+		if r.URL.Path == "/v1/lifecycle" {
+			var evt lifecycle.Event
+			_ = json.NewDecoder(r.Body).Decode(&evt)
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(lifecycle.Receipt{
+				EventID:    evt.EventID,
+				SealEpoch:  1,
+				CloseDay:   "2026-10-08",
+				ReceivedAt: time.Now().UnixMilli(),
+			})
+			return
+		}
 		var e contract.Event
 		_ = json.NewDecoder(r.Body).Decode(&e)
 		_ = json.NewEncoder(w).Encode(auth.Final{Request: auth.Request{Event: e}, DecisionID: "decision", Decision: "APPROVE"})
@@ -187,5 +201,134 @@ func TestAuthorizationReplayCLI(t *testing.T) {
 	}
 	if !bytes.Contains(out.Bytes(), []byte(`"completed":3`)) || manifest.Mode != "throughput" || manifest.Concurrency != 4 {
 		t.Fatal(out.String(), manifest)
+	}
+}
+
+func TestBootstrapCommand(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "supervisor.json")
+	specContent := `{
+  "type": "kafka",
+  "spec": {
+    "dataSchema": {
+      "dataSource": "swipeline_decisions",
+      "timestampSpec": {"column": "finalized_at_ms", "format": "millis"},
+      "dimensionsSpec": {"dimensions": ["run_id"]}
+    },
+    "ioConfig": {"type": "kafka", "topic": "swipeline.decisions.v1"}
+  }
+}`
+	if err := os.WriteFile(specPath, []byte(specContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	state := "STARTING"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/druid/indexer/v1/supervisor/swipeline_decisions":
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		case r.Method == http.MethodPost && r.URL.Path == "/druid/indexer/v1/supervisor":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"swipeline_decisions"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/druid/indexer/v1/supervisor/swipeline_decisions/status":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"payload": map[string]any{"state": state},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var out, errs bytes.Buffer
+	err := run(context.Background(), []string{"bootstrap", "--druid", server.URL, "--spec", specPath, "--wait", "100ms"}, &out, &errs)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "STARTING") {
+		t.Fatalf("expected error to contain state 'STARTING', got: %v", err)
+	}
+
+	state = "RUNNING"
+	out.Reset()
+	errs.Reset()
+	err = run(context.Background(), []string{"bootstrap", "--druid", server.URL, "--spec", specPath, "--wait", "2s"}, &out, &errs)
+	if err != nil {
+		t.Fatalf("unexpected bootstrap error: %v", err)
+	}
+}
+
+func TestReconcileCLI(t *testing.T) {
+	gwSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(auth.RunCounts{
+			RunID:    "run-cli",
+			Admitted: 50,
+			Final:    50,
+			Pending:  0,
+		})
+	}))
+	defer gwSrv.Close()
+
+	druidSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"total_count": float64(50), "distinct_count": float64(50)},
+		})
+	}))
+	defer druidSrv.Close()
+
+	var out, errs bytes.Buffer
+	err := run(context.Background(), []string{"reconcile", "--run-id", "run-cli", "--gateway", gwSrv.URL, "--druid", druidSrv.URL, "--wait", "1s"}, &out, &errs)
+	if err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	if !strings.Contains(out.String(), `"equal":true`) {
+		t.Fatalf("expected JSON output with equal=true, got: %s", out.String())
+	}
+
+	// Missing --run-id
+	err = run(context.Background(), []string{"reconcile", "--gateway", gwSrv.URL}, &out, &errs)
+	if err == nil || !strings.Contains(err.Error(), "missing --run-id") {
+		t.Fatalf("expected missing --run-id error, got: %v", err)
+	}
+}
+
+func TestInspectCLI(t *testing.T) {
+	var out, errs bytes.Buffer
+
+	// Missing --transaction-id flag
+	err := run(context.Background(), []string{"inspect"}, &out, &errs)
+	if err == nil || !strings.Contains(err.Error(), "missing --transaction-id") {
+		t.Fatalf("expected missing --transaction-id error, got: %v", err)
+	}
+
+	// Valid inspect against mock spark endpoint
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("transaction_id") != "tx-test-123" {
+			http.Error(w, "unexpected tx id", 400)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"transaction_id": "tx-test-123",
+			"status": "CLEARED",
+			"amounts": {"authorized_amount": 5000, "cleared_amount": 5000, "currency": "USD"},
+			"state_hash": "hash1",
+			"state_version": 2,
+			"events": [],
+			"postings": []
+		}`))
+	}))
+	defer server.Close()
+
+	out.Reset()
+	errs.Reset()
+	err = run(context.Background(), []string{"inspect", "--transaction-id", "tx-test-123", "--spark", server.URL}, &out, &errs)
+	if err != nil {
+		t.Fatalf("unexpected inspect error: %v", err)
+	}
+	if !strings.Contains(out.String(), `"status": "CLEARED"`) {
+		t.Fatalf("expected output to contain CLEARED, got: %s", out.String())
 	}
 }

@@ -20,8 +20,12 @@ import (
 
 	"github.com/VivianSobers/swipeline/internal/authorize"
 	"github.com/VivianSobers/swipeline/internal/contract"
+	"github.com/VivianSobers/swipeline/internal/druid"
 	"github.com/VivianSobers/swipeline/internal/generator"
+	"github.com/VivianSobers/swipeline/internal/inspect"
 	"github.com/VivianSobers/swipeline/internal/preview"
+
+	"github.com/VivianSobers/swipeline/internal/reconcile"
 	"github.com/VivianSobers/swipeline/internal/replay"
 )
 
@@ -70,7 +74,7 @@ func call(ctx context.Context, method, path string, body any, out io.Writer) err
 
 func run(ctx context.Context, args []string, out, errs io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: swipeline serve|replay|status|health")
+		return errors.New("usage: swipeline serve|replay|status|health|bootstrap|reconcile")
 	}
 	switch args[0] {
 	case "serve":
@@ -152,6 +156,7 @@ func run(ctx context.Context, args []string, out, errs io.Writer) error {
 		gatewayURL := flags.String("gateway", os.Getenv("SWIPELINE_GATEWAY_URL"), "authorization gateway URL")
 		mode := flags.String("deadline-mode", "latency", "latency (35/50 ms) or throughput (80/100 ms) deadlines")
 		lanes := flags.Int("lanes", 128, "bounded ordered card lanes")
+		queueDir := flags.String("queue-dir", "", "persistent disk queue directory for lifecycle events")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
@@ -168,7 +173,11 @@ func run(ctx context.Context, args []string, out, errs io.Writer) error {
 				base = "http://127.0.0.1:8081"
 			}
 			c := &authorize.Client{Base: base, HTTP: &http.Client{Timeout: 2 * time.Second}}
-			summary, err := authorize.Run(ctx, cfg, c, *mode, *lanes)
+			var opts []authorize.Option
+			if *queueDir != "" {
+				opts = append(opts, authorize.WithQueueDir(*queueDir))
+			}
+			summary, err := authorize.Run(ctx, cfg, c, *mode, *lanes, opts...)
 			if encodeErr := json.NewEncoder(out).Encode(summary); err == nil {
 				err = encodeErr
 			}
@@ -189,7 +198,119 @@ func run(ctx context.Context, args []string, out, errs io.Writer) error {
 			path = "/healthz"
 		}
 		return call(short, "GET", path, nil, out)
+	case "bootstrap":
+		flags := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
+		flags.SetOutput(errs)
+		druidURL := flags.String("druid", "http://druid-router:8888", "Druid router URL")
+		specPath := flags.String("spec", "/etc/swipeline/supervisor.json", "path to supervisor spec file")
+		waitDuration := flags.Duration("wait", 5*time.Minute, "maximum wait duration for supervisor RUNNING")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 {
+			return errors.New("unexpected bootstrap arguments")
+		}
+		specData, err := os.ReadFile(*specPath)
+		if err != nil {
+			return fmt.Errorf("failed to read supervisor spec: %w", err)
+		}
+		client := druid.NewClient(*druidURL)
+		created, err := client.Install(ctx, specData)
+		if err != nil {
+			return fmt.Errorf("failed to install supervisor: %w", err)
+		}
+		if created {
+			fmt.Fprintln(out, "supervisor created")
+		} else {
+			fmt.Fprintln(out, "supervisor already installed")
+		}
+
+		var specDoc struct {
+			Type string `json:"type"`
+			Spec struct {
+				DataSchema struct {
+					DataSource string `json:"dataSource"`
+				} `json:"dataSchema"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(specData, &specDoc); err != nil {
+			return fmt.Errorf("failed to parse supervisor spec: %w", err)
+		}
+		id := specDoc.Spec.DataSchema.DataSource
+		if id == "" {
+			return errors.New("supervisor spec missing dataSource")
+		}
+
+		deadline := time.Now().Add(*waitDuration)
+		var lastState string
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			state, err := client.State(ctx, id)
+			if err == nil {
+				lastState = state
+				if state == "RUNNING" {
+					fmt.Fprintf(out, "supervisor %s is RUNNING\n", id)
+					return nil
+				}
+			}
+			if time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		return fmt.Errorf("timeout waiting for supervisor %s to be RUNNING (current state: %s)", id, lastState)
+	case "reconcile":
+		flags := flag.NewFlagSet("reconcile", flag.ContinueOnError)
+		flags.SetOutput(errs)
+		runID := flags.String("run-id", "", "run ID to reconcile")
+		gatewayURL := flags.String("gateway", "http://127.0.0.1:8080", "Gateway URL")
+		druidURL := flags.String("druid", "http://druid-router:8888", "Druid router URL")
+		waitDuration := flags.Duration("wait", 2*time.Minute, "maximum wait duration for reconciliation")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 {
+			return errors.New("unexpected reconcile arguments")
+		}
+		if *runID == "" {
+			return errors.New("missing --run-id")
+		}
+		if *gatewayURL == "" {
+			return errors.New("missing --gateway")
+		}
+		if *druidURL == "" {
+			return errors.New("missing --druid")
+		}
+		return reconcile.Run(ctx, *gatewayURL, *druidURL, *runID, *waitDuration, out)
+	case "inspect":
+		flags := flag.NewFlagSet("inspect", flag.ContinueOnError)
+		flags.SetOutput(errs)
+		txID := flags.String("transaction-id", "", "transaction ID to inspect")
+		sparkURL := flags.String("spark", os.Getenv("SWIPELINE_SPARK_URL"), "Spark worker endpoint or command")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 {
+			return errors.New("unexpected inspect arguments")
+		}
+		if *txID == "" {
+			return errors.New("missing --transaction-id")
+		}
+		res, err := inspect.Inspect(ctx, *txID, *sparkURL)
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(res)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+
 }
