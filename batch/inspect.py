@@ -46,7 +46,7 @@ def inspect_transaction(
     try:
         if is_hudi_table(spark, tx_path):
             df = spark.read.format("hudi").load(tx_path)
-            rows = df.filter(f"transaction_id = '{tx_id}'").collect()
+            rows = df.filter(col("transaction_id") == tx_id).collect()
             if rows:
                 tx_record = rows[0].asDict(recursive=True)
     except Exception as e:
@@ -58,7 +58,7 @@ def inspect_transaction(
         if is_hudi_table(spark, events_path):
             df = spark.read.format("hudi").load(events_path)
             rows = (
-                df.filter(f"transaction_id = '{tx_id}'")
+                df.filter(col("transaction_id") == tx_id)
                 .orderBy("logical_seq")
                 .collect()
             )
@@ -73,7 +73,7 @@ def inspect_transaction(
         if is_hudi_table(spark, postings_path):
             df = spark.read.format("hudi").load(postings_path)
             rows = (
-                df.filter(f"transaction_id = '{tx_id}'")
+                df.filter(col("transaction_id") == tx_id)
                 .orderBy("posting_revision", "posting_date")
                 .collect()
             )
