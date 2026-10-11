@@ -260,3 +260,37 @@ func (c *Client) SQL(ctx context.Context, query string, params ...any) ([]map[st
 
 	return rows, nil
 }
+
+type DecisionCounts struct {
+	Count    int64
+	Distinct int64
+}
+
+func (c *Client) DecisionCounts(ctx context.Context, runID string) (DecisionCounts, error) {
+	query := "SELECT COUNT(*) AS total_count, COUNT(DISTINCT transaction_id) AS distinct_count FROM swipeline_decisions WHERE run_id = ?"
+	rows, err := c.SQL(ctx, query, runID)
+	if err != nil {
+		return DecisionCounts{}, err
+	}
+	if len(rows) == 0 {
+		return DecisionCounts{}, nil
+	}
+	var res DecisionCounts
+	for k, v := range rows[0] {
+		var n int64
+		switch num := v.(type) {
+		case float64:
+			n = int64(num)
+		case int64:
+			n = num
+		case int:
+			n = int64(num)
+		}
+		if strings.EqualFold(k, "total_count") {
+			res.Count = n
+		} else if strings.EqualFold(k, "distinct_count") {
+			res.Distinct = n
+		}
+	}
+	return res, nil
+}

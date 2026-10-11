@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -119,5 +120,79 @@ func TestRefuseChangedSupervisor(t *testing.T) {
 	}
 	if postCount.Load() != 0 {
 		t.Fatalf("expected 0 POST on conflict, got %d", postCount.Load())
+	}
+}
+
+func TestClientSQL(t *testing.T) {
+	var receivedQuery string
+	var receivedParams []map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/druid/v2/sql" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			http.Error(w, "invalid content type", http.StatusBadRequest)
+			return
+		}
+		var doc struct {
+			Query      string           `json:"query"`
+			Parameters []map[string]any `json:"parameters"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&doc); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		receivedQuery = doc.Query
+		receivedParams = doc.Parameters
+
+		if doc.Query == "FAIL" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"plan failed","errorMessage":"column not found"}`))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"total_count": float64(42), "distinct_count": float64(42)},
+		})
+	}))
+	defer srv.Close()
+
+	client := &Client{
+		Base: srv.URL,
+		HTTP: srv.Client(),
+	}
+
+	ctx := context.Background()
+	rows, err := client.SQL(ctx, "SELECT COUNT(*) FROM swipeline_decisions WHERE run_id = ?", "test-run")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if receivedQuery != "SELECT COUNT(*) FROM swipeline_decisions WHERE run_id = ?" {
+		t.Fatalf("unexpected query: %s", receivedQuery)
+	}
+	if len(receivedParams) != 1 || receivedParams[0]["value"] != "test-run" || receivedParams[0]["type"] != "VARCHAR" {
+		t.Fatalf("unexpected parameters: %+v", receivedParams)
+	}
+
+	_, err = client.SQL(ctx, "FAIL")
+	if err == nil {
+		t.Fatal("expected error on HTTP 400, got nil")
+	}
+	if !strings.Contains(err.Error(), "column not found") {
+		t.Fatalf("expected error to contain Druid error message 'column not found', got: %v", err)
+	}
+
+	counts, err := client.DecisionCounts(ctx, "test-run")
+	if err != nil {
+		t.Fatalf("DecisionCounts failed: %v", err)
+	}
+	if counts.Count != 42 || counts.Distinct != 42 {
+		t.Fatalf("unexpected DecisionCounts: %+v", counts)
 	}
 }
