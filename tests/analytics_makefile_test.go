@@ -2,6 +2,7 @@ package tests
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -155,5 +156,35 @@ func TestAnalyticsMakefilePreflightOrder(t *testing.T) {
 	demoLines := strings.Split(strings.TrimSpace(blockDemo), "\n")
 	if len(demoLines) < 2 || !strings.Contains(demoLines[1], "preflight.sh full") {
 		t.Fatalf("m3-demo first step must call preflight.sh full, got: %s", demoLines[1])
+	}
+}
+
+func TestM3DemoScript(t *testing.T) {
+	script := "tests/m3-demo.sh"
+	data, err := os.ReadFile(script)
+	if err != nil {
+		script = "../tests/m3-demo.sh"
+		data, err = os.ReadFile(script)
+		if err != nil {
+			t.Fatalf("tests/m3-demo.sh not found: %v", err)
+		}
+	}
+	content := string(data)
+
+	cmd := exec.Command("sh", "-n", script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("sh -n tests/m3-demo.sh failed: %v: %s", err, string(out))
+	}
+
+	for _, want := range []string{
+		"COMPOSE_PROFILES=full",
+		"down -v",
+		"300",
+		"1000",
+		"TestInstalledAnalytics",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("tests/m3-demo.sh missing %q", want)
+		}
 	}
 }
