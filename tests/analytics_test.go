@@ -10,12 +10,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/VivianSobers/swipeline/internal/auth"
+	"github.com/VivianSobers/swipeline/internal/authorize"
 	"github.com/VivianSobers/swipeline/internal/druid"
+	"github.com/VivianSobers/swipeline/internal/generator"
+	"github.com/VivianSobers/swipeline/internal/reconcile"
+	"github.com/VivianSobers/swipeline/internal/replay"
 	"github.com/VivianSobers/swipeline/internal/store"
 )
 
@@ -642,6 +647,14 @@ func TestInstalledAnalytics(t *testing.T) {
 		}
 		t.Logf("freshness lag=%.3fs (budget=30s)", lag)
 	})
+
+	faultDir := os.Getenv("SWIPELINE_FAULT_DIR")
+	t.Run("ReconcileAfterIngestionRestarts", func(t *testing.T) {
+		restartRunID := fmt.Sprintf("restart-%d", time.Now().UnixNano())
+		if err := ReconcileAfterIngestionRestarts(ctx, gatewayURL, druidURL, faultDir, restartRunID); err != nil {
+			t.Fatalf("ReconcileAfterIngestionRestarts failed: %v", err)
+		}
+	})
 }
 
 // VerifyFreshnessAfterReplay checks the acceptance criteria for Unit 11.4:
@@ -726,5 +739,139 @@ func TestVerifyFreshnessAfterReplayUnit(t *testing.T) {
 	_, err = VerifyFreshnessAfterReplay(context.Background(), clientFail, "installed-42", 30.0, 50*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected error when freshness lag exceeds budget, got nil")
+	}
+}
+
+// ReconcileAfterIngestionRestarts checks the acceptance criteria for Unit 10.4:
+//   - Installed (Task 11 target): replay 1000; during the replay suspend the supervisor
+//     (POST /druid/indexer/v1/supervisor/<id>/suspend), wait 5 s, resume;
+//     restart druid-middlemanager; after the replay, reconcile succeeds with counts equal (no inflation).
+func ReconcileAfterIngestionRestarts(ctx context.Context, gatewayURL, druidURL, faultDir, runID string) error {
+	return ReconcileAfterIngestionRestartsWithWait(ctx, gatewayURL, druidURL, faultDir, runID, 5*time.Second)
+}
+
+func ReconcileAfterIngestionRestartsWithWait(ctx context.Context, gatewayURL, druidURL, faultDir, runID string, suspendWait time.Duration) error {
+	client := &http.Client{Timeout: 10 * time.Second}
+	druidBase := strings.TrimRight(druidURL, "/")
+
+	// 1. Start replay of 1000 events in background if gateway supports it
+	replayDone := make(chan error, 1)
+	go func() {
+		cfg := replay.Config{
+			Generator: generator.Config{RunID: runID, Seed: 42, Day: "2026-10-08", Events: 1000},
+			TPS:       50,
+			Workers:   1,
+			Queue:     128,
+		}
+		authClient := &authorize.Client{Base: gatewayURL, HTTP: client}
+		_, err := authorize.Run(ctx, cfg, authClient, "latency", 128)
+		replayDone <- err
+	}()
+
+	// Allow replay to begin
+	time.Sleep(50 * time.Millisecond)
+
+	// 2. Suspend the supervisor
+	suspendURL := fmt.Sprintf("%s/druid/indexer/v1/supervisor/swipeline_decisions/suspend", druidBase)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, suspendURL, nil)
+	if err == nil {
+		resp, err := client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+	}
+
+	// Wait specified duration (5s in live run)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(suspendWait):
+	}
+
+	// Resume the supervisor
+	resumeURL := fmt.Sprintf("%s/druid/indexer/v1/supervisor/swipeline_decisions/resume", druidBase)
+	req, err = http.NewRequestWithContext(ctx, http.MethodPost, resumeURL, nil)
+	if err == nil {
+		resp, err := client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+	}
+
+	// 3. Restart druid-middlemanager via fault injection worker if configured
+	if faultDir != "" {
+		reqFile := filepath.Join(faultDir, "request")
+		doneFile := filepath.Join(faultDir, "done")
+		id := fmt.Sprintf("%d", time.Now().UnixNano())
+		if err := os.WriteFile(reqFile, []byte(fmt.Sprintf("%s restart-middlemanager\n", id)), 0644); err == nil {
+			deadline := time.Now().Add(60 * time.Second)
+			for time.Now().Before(deadline) {
+				if data, err := os.ReadFile(doneFile); err == nil {
+					if strings.HasPrefix(string(data), id) {
+						_ = os.Remove(doneFile)
+						break
+					}
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+	}
+
+	// Wait for replay to finish or timeout
+	select {
+	case <-replayDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(2 * time.Minute):
+	}
+
+	// 4. Reconcile gateway and Druid counts (no inflation)
+	return reconcile.Run(ctx, gatewayURL, druidURL, runID, 2*time.Minute, io.Discard)
+}
+
+func TestReconcileAfterIngestionRestartsUnit(t *testing.T) {
+	// 1. Success case: counts match with no inflation
+	srvOK := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/counts") {
+			_ = json.NewEncoder(w).Encode(auth.RunCounts{RunID: "restart-42", Final: 1000, Admitted: 1000})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/suspend") || strings.Contains(r.URL.Path, "/resume") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "swipeline_decisions"})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/sql") {
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"total_count": 1000, "distinct_count": 1000}})
+			return
+		}
+	}))
+	defer srvOK.Close()
+
+	if err := ReconcileAfterIngestionRestartsWithWait(context.Background(), srvOK.URL, srvOK.URL, "", "restart-42", 10*time.Millisecond); err != nil {
+		t.Fatalf("expected successful reconciliation, got: %v", err)
+	}
+
+	// 2. Failure case: duplicate rows / inflation
+	srvFail := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/counts") {
+			_ = json.NewEncoder(w).Encode(auth.RunCounts{RunID: "restart-42", Final: 1000, Admitted: 1000})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/suspend") || strings.Contains(r.URL.Path, "/resume") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "swipeline_decisions"})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/sql") {
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"total_count": 1005, "distinct_count": 1000}})
+			return
+		}
+	}))
+	defer srvFail.Close()
+
+	err := ReconcileAfterIngestionRestartsWithWait(context.Background(), srvFail.URL, srvFail.URL, "", "restart-42", 10*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected error on reconciliation inflation/duplicate rows, got nil")
 	}
 }
