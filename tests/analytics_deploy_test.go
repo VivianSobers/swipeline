@@ -373,3 +373,25 @@ func TestRenderedSupersetService(t *testing.T) {
 		t.Fatalf("superset healthcheck test: %s", healthCmd)
 	}
 }
+
+func TestCIWorkflowFullProfile(t *testing.T) {
+	path := ".github/workflows/ci.yml"
+	if _, err := os.Stat(path); err != nil {
+		path = "../.github/workflows/ci.yml"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	for _, want := range []string{
+		"COMPOSE_PROFILES=full make deploy-check",
+		"superset",
+		"runner capacity",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("ci.yml missing %q", want)
+		}
+	}
+}

@@ -21,6 +21,11 @@ jobs:
         run: make check build
       - name: Check deployment configuration
         run: make deploy-check
+      - name: Check full profile configuration
+        # No full stack in CI due to runner capacity; full profile runs on the reference server.
+        run: |
+          COMPOSE_PROFILES=full make deploy-check
+          make superset-check
       - name: Prove installed preview
         run: make demo
   storage:
