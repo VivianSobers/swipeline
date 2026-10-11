@@ -39,9 +39,12 @@ def parse_event_envelope(record: str | bytes | dict) -> dict:
             "validation_state": "INVALID",
         }
 
+    if not isinstance(data, dict):
+        return parse_event_envelope(None)
+
     schema_version = str(data.get("schema_version") or "1.0.0")
     event_id = data.get("event_id") or data.get("decision_id")
-    event_type = data.get("event_type") or ("AUTH_DECISION" if "decision" in data else None)
+    event_type = data.get("event_type") or data.get("kind") or ("AUTH_DECISION" if "decision" in data else None)
     run_id = data.get("run_id")
     transaction_id = data.get("transaction_id")
     source_seq = data.get("source_seq") if "source_seq" in data else data.get("sequence")
@@ -49,17 +52,25 @@ def parse_event_envelope(record: str | bytes | dict) -> dict:
     produced_at_ms = data.get("produced_at_ms") or data.get("admitted_at_ms") or event_time_ms
     payload_hash = data.get("payload_hash")
 
+    payload = dict(data.get("payload") or {}) if isinstance(data.get("payload"), dict) else dict(data)
+    aliases = {"amount_minor": "amount", "card_token": "card_id", "reason": "decision_reason", "fraud_flags": "decision_flags"}
+    for source, target in aliases.items():
+        if source in payload:
+            payload[target] = payload[source]
+    logical_seq = 1 if event_type == "AUTH_DECISION" else data.get("lifecycle_seq", data.get("logical_seq", source_seq))
+
     # Validation criteria
     is_valid = (
         bool(event_id and isinstance(event_id, str))
         and bool(run_id and isinstance(run_id, str))
         and bool(transaction_id and isinstance(transaction_id, str))
         and bool(event_type and isinstance(event_type, str))
-        and (source_seq is not None and isinstance(source_seq, (int, float)))
-        and bool(event_time_ms and isinstance(event_time_ms, (int, float)))
+        and (source_seq is not None and isinstance(source_seq, int) and not isinstance(source_seq, bool))
+        and bool(event_time_ms and isinstance(event_time_ms, int) and not isinstance(event_time_ms, bool))
         and bool(payload_hash and isinstance(payload_hash, str))
     )
 
+    is_valid = is_valid and isinstance(logical_seq, int) and not isinstance(logical_seq, bool)
     validation_state = "VALID" if is_valid else "INVALID"
 
     return {
@@ -68,8 +79,10 @@ def parse_event_envelope(record: str | bytes | dict) -> dict:
         "event_type": str(event_type or "UNKNOWN"),
         "run_id": str(run_id or "unknown"),
         "transaction_id": str(transaction_id or "unknown"),
-        "source_seq": int(source_seq or 0),
-        "logical_seq": int(source_seq or 0),
+        "source_seq": source_seq if isinstance(source_seq, int) else 0,
+        "logical_seq": logical_seq if isinstance(logical_seq, int) else 0,
+        "payload": payload,
+        "parent_event_id": data.get("parent_event_id", payload.get("parent_event_id")),
         "event_time_ms": int(event_time_ms or 0),
         "produced_at_ms": int(produced_at_ms or 0),
         "payload_hash": str(payload_hash or ""),
@@ -97,9 +110,15 @@ def ingest_journal(
     now_ms = int(time.time() * 1000)
 
     parsed_rows = []
+    incoming_hashes = {}
     for row in raw_df.collect():
         val = row["value"] if "value" in row else row.asDict()
         envelope = parse_event_envelope(val)
+        if envelope["event_id"] in incoming_hashes and incoming_hashes[envelope["event_id"]] != envelope["payload_hash"]:
+            raise RuntimeError("Journal event ID/hash conflict")
+        if envelope["event_id"] in incoming_hashes:
+            continue
+        incoming_hashes[envelope["event_id"]] = envelope["payload_hash"]
         parsed_rows.append(
             (
                 envelope["event_id"],
@@ -130,7 +149,12 @@ def ingest_journal(
     incoming_df = spark.createDataFrame(parsed_rows, schema=SCHEMA_LEDGER_EVENTS)
 
     if is_hudi_table(spark, target_path):
-        existing_keys = spark.read.format("hudi").load(target_path).select("event_id")
+        existing = spark.read.format("hudi").load(target_path)
+        for row in existing.select("event_id", "payload_hash").collect():
+            prior = row.asDict()
+            if prior["event_id"] in incoming_hashes and incoming_hashes[prior["event_id"]] != prior["payload_hash"]:
+                raise RuntimeError("Journal event ID/hash conflict")
+        existing_keys = existing.select("event_id")
         to_insert = incoming_df.join(existing_keys, on="event_id", how="left_anti")
     else:
         to_insert = incoming_df

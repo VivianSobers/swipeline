@@ -99,13 +99,14 @@ class BatchCoordinator:
             )
 
     def get_latest_offsets(self) -> dict:
-        """Returns ending offsets of the latest completed batch, or starting offsets of an uncompleted batch."""
+        """Returns only the latest completed batch ending offsets."""
         conn = self._get_connection()
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT starting_offsets, ending_offsets, state
                 FROM ingest_batches
+                WHERE state = 'COMPLETE'
                 ORDER BY created_at DESC
                 LIMIT 1
                 """
@@ -115,17 +116,27 @@ class BatchCoordinator:
                 return {}
 
             starting_offsets, ending_offsets, state = row
-            if state != "COMPLETE":
-                return (
-                    starting_offsets
-                    if isinstance(starting_offsets, dict)
-                    else json.loads(starting_offsets)
-                )
             return (
                 ending_offsets
                 if isinstance(ending_offsets, dict)
                 else json.loads(ending_offsets)
             )
+
+    def persist_posting_assignments(self, batch_id: str, assignments: dict) -> dict:
+        """Persist full missing posting rows before writes, preserving earlier assignments."""
+        conn = self._get_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE ingest_batches
+                SET posting_assignments = %s::jsonb || posting_assignments
+                WHERE batch_id = %s AND state != 'COMPLETE'
+                RETURNING posting_assignments""",
+                (json.dumps(assignments), batch_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise RuntimeError("No pending batch for posting assignments")
+            return row[0] if isinstance(row[0], dict) else json.loads(row[0])
 
     def acquire_advisory_lock(self, key: int = 72002) -> bool:
         """Attempts to acquire PostgreSQL session advisory lock using pg_try_advisory_lock."""
@@ -149,7 +160,7 @@ class BatchCoordinator:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT batch_id, starting_offsets, ending_offsets, journal_instant, transaction_instant, posting_instant, state
+                SELECT batch_id, starting_offsets, ending_offsets, journal_instant, transaction_instant, posting_instant, state, posting_assignments
                 FROM ingest_batches
                 WHERE state != 'COMPLETE'
                 ORDER BY created_at DESC
@@ -171,4 +182,5 @@ class BatchCoordinator:
                 "transaction_instant": row[4],
                 "posting_instant": row[5],
                 "state": row[6],
+                "posting_assignments": row[7] if isinstance(row[7], dict) else json.loads(row[7]),
             }

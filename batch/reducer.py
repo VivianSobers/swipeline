@@ -63,11 +63,14 @@ class TransactionReducer:
         if not events and current_state is None:
             return None, []
 
-        sorted_events = sorted(events, key=lambda e: e.get("logical_seq", 0))
+        sorted_events = sorted(events, key=lambda e: (e.get("logical_seq", 0), e.get("_history_order", (0, "")), e.get("event_id", "")))
         state = dict(current_state) if current_state else None
         applied_events = []
 
         for evt in sorted_events:
+            if evt.get("validation_state", "VALID") != "VALID":
+                self._quarantine(evt)
+                continue
             seq = evt.get("logical_seq", 0)
             event_type = evt.get("event_type")
             payload = evt.get("payload")
@@ -80,10 +83,13 @@ class TransactionReducer:
                 payload = {}
 
             # Seq 1: AUTH_DECISION
-            if seq == 1 or event_type == "AUTH_DECISION":
+            if seq == 1 and event_type == "AUTH_DECISION":
                 if state is not None:
                     continue  # already initialized
                 decision = payload.get("decision", "DECLINE")
+                if decision not in ("APPROVE", "DECLINE") or not isinstance(payload.get("amount", 0), int) or isinstance(payload.get("amount", 0), bool) or payload.get("amount", 0) < 0:
+                    self._quarantine(evt)
+                    continue
                 status = "AUTHORIZED" if decision == "APPROVE" else "DECLINED"
                 event_time_ms = evt.get("event_time_ms", 0)
                 amount = payload.get("amount", 0)
@@ -98,7 +104,8 @@ class TransactionReducer:
                     "acquirer_bank_id": payload.get("acquirer_bank_id", ""),
                     "currency": payload.get("currency", "USD"),
                     "authorized_amount": amount,
-                    "decision_id": evt.get("event_id", ""),
+                    "decision_id": payload.get("decision_id", evt.get("event_id", "")),
+                    "_last_event_id": evt.get("event_id"),
                     "decision": decision,
                     "decision_source": payload.get("decision_source", "ENGINE"),
                     "decision_reason": payload.get("decision_reason"),
@@ -125,11 +132,19 @@ class TransactionReducer:
                 self.unapplied_events.append(evt)
                 continue
 
+            identity = {"amount": "authorized_amount", "currency": "currency", "merchant_id": "merchant_id", "issuer_bank_id": "issuer_bank_id", "acquirer_bank_id": "acquirer_bank_id", "authorization_date": "authorization_date", "card_id": "card_id", "mcc": "mcc", "reference_version": "reference_version"}
+            changed_identity = any(key in payload and payload[key] != state.get(target) for key, target in identity.items())
+            changed_identity |= any(key in evt and evt[key] != state.get(key) for key in ("transaction_id", "run_id"))
+            if changed_identity:
+                self._quarantine(evt)
+                continue
             current_status = state["status"]
             current_seq = state["latest_applied_sequence"]
 
             # Already applied:
             if seq <= current_seq:
+                if evt.get("event_id") != state.get("_last_event_id"):
+                    self._quarantine(evt)
                 continue
 
             # Invalid transition detections:
@@ -148,6 +163,12 @@ class TransactionReducer:
                 self._quarantine(evt)
                 continue
 
+            parent = evt.get("parent_event_id")
+            if ("kind" in payload and parent is None) or (parent is not None and parent != state.get("_last_event_id", state.get("decision_id"))):
+                self.unapplied_count += 1
+                self.unapplied_events.append(evt)
+                continue
+
             # Contiguous transitions:
             if seq == 2 and current_seq == 1 and current_status == "AUTHORIZED":
                 if event_type == "CLEAR":
@@ -161,6 +182,7 @@ class TransactionReducer:
                     if new_hash != state.get("state_hash"):
                         state["state_version"] += 1
                         state["state_hash"] = new_hash
+                    state["_last_event_id"] = evt.get("event_id")
                     applied_events.append(evt)
                 elif event_type == "REVERSE":
                     state["status"] = "REVERSED"
@@ -173,6 +195,7 @@ class TransactionReducer:
                     if new_hash != state.get("state_hash"):
                         state["state_version"] += 1
                         state["state_hash"] = new_hash
+                    state["_last_event_id"] = evt.get("event_id")
                     applied_events.append(evt)
                 else:
                     self._quarantine(evt)
@@ -189,6 +212,7 @@ class TransactionReducer:
                     if new_hash != state.get("state_hash"):
                         state["state_version"] += 1
                         state["state_hash"] = new_hash
+                    state["_last_event_id"] = evt.get("event_id")
                     applied_events.append(evt)
                 elif event_type == "CHARGEBACK":
                     state["status"] = "CHARGED_BACK"
@@ -201,6 +225,7 @@ class TransactionReducer:
                     if new_hash != state.get("state_hash"):
                         state["state_version"] += 1
                         state["state_hash"] = new_hash
+                    state["_last_event_id"] = evt.get("event_id")
                     applied_events.append(evt)
                 else:
                     self._quarantine(evt)
@@ -211,6 +236,9 @@ class TransactionReducer:
             else:
                 self._quarantine(evt)
 
+        if state is not None:
+            state["state_hash"] = compute_state_hash(state)
+            state["state_version"] = (current_state.get("state_version", 0) + int(state["state_hash"] != current_state.get("state_hash"))) if current_state else 1
         return state, applied_events
 
 

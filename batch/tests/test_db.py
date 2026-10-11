@@ -142,8 +142,9 @@ class TestBatchCoordinator(unittest.TestCase):
         coordinator = BatchCoordinator(dsn="postgres://mock:5432/gateway")
         
         offsets = coordinator.get_latest_offsets()
-        # Must return starting_offsets of the uncompleted batch rather than advancing
-        self.assertEqual(offsets, starting)
+        # The query selects completed batches only, so pending batches are excluded.
+        self.assertIn("WHERE state = 'COMPLETE'", self.mock_cursor.execute.call_args[0][0])
+        self.assertEqual(offsets, ending)
 
     @patch("batch.db.psycopg2.connect")
     def test_get_pending_batch(self, mock_connect):
@@ -158,6 +159,7 @@ class TestBatchCoordinator(unittest.TestCase):
             "20261011120100",
             None,
             "TRANSACTIONS_COMMITTED",
+            {},
         )
         coordinator = BatchCoordinator(dsn="postgres://mock:5432/gateway")
         pending = coordinator.get_pending_batch()

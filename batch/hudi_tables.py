@@ -124,14 +124,11 @@ HUDI_OPTIONS_SETTLEMENT_POSTINGS = {
 
 def is_hudi_table(spark, path: str) -> bool:
     """Checks whether a valid Hudi table metadata directory exists at path."""
-    try:
-        sc = spark.sparkContext
-        conf = sc._jsc.hadoopConfiguration()
-        hpath = sc._gateway.jvm.org.apache.hadoop.fs.Path(path + "/.hoodie")
-        fs = hpath.getFileSystem(conf)
-        return bool(fs.exists(hpath))
-    except Exception:
-        return False
+    sc = spark.sparkContext
+    conf = sc._jsc.hadoopConfiguration()
+    hpath = sc._gateway.jvm.org.apache.hadoop.fs.Path(path + "/.hoodie")
+    fs = hpath.getFileSystem(conf)
+    return bool(fs.exists(hpath))
 
 
 def init_tables(

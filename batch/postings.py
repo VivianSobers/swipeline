@@ -1,15 +1,11 @@
 import hashlib
 import json
-from decimal import Decimal, ROUND_HALF_UP
 
 
 def calculate_interchange_fee(amount_minor: int) -> int:
     """Calculates 150 bps interchange fee using exact integer arithmetic and round-half-up."""
-    if amount_minor == 0:
-        return 0
-    # Formula: round_half_up(amount_minor * 150 / 10000)
-    d = (Decimal(amount_minor) * Decimal(150)) / Decimal(10000)
-    return int(d.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    sign = -1 if amount_minor < 0 else 1
+    return sign * ((abs(amount_minor) * 150 + 5000) // 10000)
 
 
 def derive_posting_id(event_id: str) -> str:
@@ -27,10 +23,7 @@ def reconstruct_postings(
 ) -> list[dict]:
     """Reconstructs financial postings for a transaction from its applied lifecycle events."""
     postings = []
-    has_cleared = (
-        tx.get("cleared_amount", 0) > 0
-        or tx.get("status") in ("CLEARED", "REVERSED", "CHARGED_BACK")
-    )
+    has_cleared = tx.get("cleared_amount", 0) > 0
     clear_fee = 0
 
     # Pre-populate clear_fee from existing postings if already cleared
@@ -58,7 +51,8 @@ def reconstruct_postings(
         elif not isinstance(payload, dict):
             payload = {}
 
-        amount = payload.get("amount") or tx.get("authorized_amount", 0)
+        amount = tx.get("authorized_amount", 0)
+        posting_day = payload.get("close_day") or close_day
         pid = derive_posting_id(event_id)
 
         existing = existing_postings.get(pid) or existing_postings.get(event_id)
@@ -93,7 +87,7 @@ def reconstruct_postings(
                         "original_business_date": tx.get(
                             "authorization_date", close_day
                         ),
-                        "posting_date": close_day,
+                        "posting_date": posting_day,
                         "adjustment_reason": None,
                         "batch_id": batch_id,
                     }
@@ -124,7 +118,7 @@ def reconstruct_postings(
                             "original_business_date": tx.get(
                                 "authorization_date", close_day
                             ),
-                            "posting_date": close_day,
+                            "posting_date": posting_day,
                             "adjustment_reason": "REVERSAL",
                             "batch_id": batch_id,
                         }
@@ -152,7 +146,7 @@ def reconstruct_postings(
                             "original_business_date": tx.get(
                                 "authorization_date", close_day
                             ),
-                            "posting_date": close_day,
+                            "posting_date": posting_day,
                             "adjustment_reason": "CHARGEBACK",
                             "batch_id": batch_id,
                         }

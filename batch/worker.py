@@ -1,10 +1,8 @@
 import argparse
 import datetime
-import json
 import logging
 import os
 import signal
-import sys
 import time
 
 from batch.db import BatchCoordinator
@@ -56,6 +54,7 @@ def get_kafka_end_offsets(spark, brokers: str, topics: list[str]) -> dict:
         jvm = spark.sparkContext._gateway.jvm
         props = jvm.java.util.Properties()
         props.put("bootstrap.servers", brokers)
+        props.put("isolation.level", "read_committed")
         props.put(
             "key.deserializer",
             "org.apache.kafka.common.serialization.ByteArrayDeserializer",
@@ -69,6 +68,8 @@ def get_kafka_end_offsets(spark, brokers: str, topics: list[str]) -> dict:
             tps = jvm.java.util.ArrayList()
             for t in topics:
                 part_infos = consumer.partitionsFor(t)
+                if part_infos is None or part_infos.isEmpty():
+                    raise RuntimeError(f"No Kafka partitions found for {t}")
                 if part_infos is not None:
                     for pi in part_infos:
                         tps.add(
@@ -90,8 +91,7 @@ def get_kafka_end_offsets(spark, brokers: str, topics: list[str]) -> dict:
         finally:
             consumer.close()
     except Exception as e:
-        logger.warning("Failed to query Kafka offsets via JVM: %s", e)
-        return {}
+        raise RuntimeError("Failed to query Kafka offsets") from e
 
 
 def process_transactions(
@@ -99,28 +99,14 @@ def process_transactions(
     events: list[dict],
     batch_id: str,
     table_path: str | None = None,
+    tx_states: dict | None = None,
 ) -> str:
     """Reduces events by transaction and upserts resulting states to TABLE_TRANSACTIONS."""
     if not events:
         return ""
 
     tx_table = table_path or TABLE_TRANSACTIONS
-    existing_states = {}
-
-    # Load existing states from Hudi if table exists
-    try:
-        if is_hudi_table(spark, tx_table):
-            existing_df = spark.read.format("hudi").load(tx_table)
-            tx_ids = {e.get("transaction_id") for e in events if e.get("transaction_id")}
-            if tx_ids:
-                from pyspark.sql.functions import col
-                matched = existing_df.filter(col("transaction_id").isin(list(tx_ids))).collect()
-                for row in matched:
-                    d = row.asDict(recursive=True)
-                    existing_states[d["transaction_id"]] = d
-    except Exception as e:
-        logger.warning("Could not read existing transactions from Hudi: %s", e)
-
+    existing_states = read_snapshot(spark, tx_table, {e.get("transaction_id") for e in events}, "transaction_id")
     reducer = TransactionReducer()
     events_by_tx = {}
     for evt in events:
@@ -131,12 +117,12 @@ def process_transactions(
     updated_states = []
     for tid, tx_events in events_by_tx.items():
         curr_state = existing_states.get(tid)
-        new_state, _ = reducer.reduce_transaction(curr_state, tx_events)
-        if new_state:
+        new_state = tx_states.get(tid) if tx_states is not None else reducer.reduce_transaction(curr_state, tx_events)[0]
+        if new_state and (not curr_state or new_state["state_hash"] != curr_state.get("state_hash")):
             updated_states.append(new_state)
 
     if not updated_states:
-        return ""
+        return max((str(row.get("_hoodie_commit_time", "")) for row in existing_states.values()), default="")
 
     rows = []
     for s in updated_states:
@@ -181,23 +167,13 @@ def process_postings(
     batch_id: str,
     close_day: str,
     table_path: str | None = None,
+    coordinator: BatchCoordinator | None = None,
 ) -> str:
     """Reconstructs financial postings for cleared/reversed/chargeback transactions and inserts into Hudi."""
     postings_table = table_path or TABLE_SETTLEMENT_POSTINGS
     existing_postings = {}
 
-    try:
-        if is_hudi_table(spark, postings_table):
-            from pyspark.sql.functions import col
-            p_df = spark.read.format("hudi").load(postings_table)
-            tids = list(tx_states.keys())
-            if tids:
-                matched = p_df.filter(col("transaction_id").isin(tids)).collect()
-                for row in matched:
-                    d = row.asDict(recursive=True)
-                    existing_postings[d["posting_id"]] = d
-    except Exception as e:
-        logger.warning("Could not read existing postings from Hudi: %s", e)
+    existing_postings = read_snapshot(spark, postings_table, set(tx_states), "posting_id")
 
     all_postings = []
     for tid, tx in tx_states.items():
@@ -212,8 +188,16 @@ def process_postings(
     new_postings = [p for p in all_postings if p["posting_id"] not in existing_postings]
 
     if not new_postings:
-        return ""
+        return max((str(row.get("_hoodie_commit_time", "")) for row in existing_postings.values()), default="")
 
+    if coordinator is not None:
+        assignments = coordinator.persist_posting_assignments(batch_id, {p["posting_id"]: p for p in new_postings})
+        for posting in new_postings:
+            saved = assignments[posting["posting_id"]]
+            immutable = set(posting) - {"posting_date", "batch_id"}
+            if any(saved.get(k) != posting[k] for k in immutable):
+                raise RuntimeError("Conflicting persisted posting assignment")
+            posting.update(saved)
     rows = []
     for p in new_postings:
         row = (
@@ -239,165 +223,136 @@ def process_postings(
     return upsert_postings(spark, postings_df, table_path=postings_table)
 
 
-def run_batch(
-    spark,
-    coordinator: BatchCoordinator,
-    brokers: str | None = None,
-    topic: str | None = None,
-    close_day: str | None = None,
-    start_offsets: dict | None = None,
-    end_offsets: dict | None = None,
-) -> bool:
-    """Executes a single serialized batch ingestion cycle across journal, transactions, and postings."""
+def read_snapshot(spark, path, tx_ids, key):
+    """Read a verified snapshot; an inaccessible table is never treated as absent."""
+    if not is_hudi_table(spark, path):
+        return {}
+    from pyspark.sql.functions import col
+    frame = spark.read.format("hudi").load(path)
+    if tx_ids:
+        frame = frame.filter(col("transaction_id").isin(list(tx_ids)))
+    rows = [row.asDict(recursive=True) for row in frame.collect()]
+    result = {}
+    for row in rows:
+        if row[key] in result:
+            raise RuntimeError(f"Duplicate snapshot key {row[key]}")
+        result[row[key]] = row
+    return result
+
+
+def reconstruct_transaction_chains(spark, events):
+    """Rebuild affected transactions from durable valid journal rows."""
+    tids = {e["transaction_id"] for e in events if e.get("validation_state") == "VALID"}
+    if not tids:
+        return {}, {}
+    history = read_snapshot(spark, TABLE_LEDGER_EVENTS, tids, "event_id")
+    existing = read_snapshot(spark, TABLE_TRANSACTIONS, tids, "transaction_id")
+    postings = read_snapshot(spark, TABLE_SETTLEMENT_POSTINGS, tids, "posting_id")
+    committed_event_ids = {p["event_id"] for p in postings.values()}
+    grouped = {}
+    for row in history.values():
+        if row["validation_state"] != "VALID":
+            continue
+        event = parse_event_envelope(row["payload_json"])
+        event["_history_order"] = (row["first_ingest_time_ms"], row["event_id"])
+        grouped.setdefault(event["transaction_id"], []).append(event)
+    states, accepted = {}, {}
+    for tid, chain in grouped.items():
+        previous = existing.get(tid)
+        # A later competing event cannot replace an already committed transition.
+        if previous:
+            for event in chain:
+                seq, kind = event["logical_seq"], event["event_type"]
+                expected = "CLEAR" if previous["cleared_amount"] else "REVERSE"
+                if seq == 3:
+                    expected = "CHARGEBACK" if previous["status"] == "CHARGED_BACK" else "REVERSE"
+                if seq <= previous["latest_applied_sequence"] and kind == expected:
+                    event["_history_order"] = (-2 if event["event_id"] in committed_event_ids else -1, event["_history_order"])
+        state, applied = TransactionReducer().reduce_transaction(None, chain)
+        if state and previous:
+            immutable = ("run_id", "card_id", "merchant_id", "mcc", "issuer_bank_id", "acquirer_bank_id", "currency", "authorized_amount", "decision_id", "decision", "authorization_date", "original_event_time_ms")
+            if any(state[k] != previous[k] for k in immutable):
+                raise RuntimeError(f"Authorization identity changed for {tid}")
+            if state["latest_applied_sequence"] < previous["latest_applied_sequence"]:
+                raise RuntimeError(f"Committed chain missing for {tid}")
+            state["state_version"] = previous["state_version"] + int(state["state_hash"] != previous["state_hash"])
+        if state:
+            states[tid], accepted[tid] = state, applied
+    return states, accepted
+
+
+def _parse_records(raw_df):
+    return [parse_event_envelope(row.value) for row in raw_df.collect()]
+
+
+def _finish_batch(spark, coordinator, batch_id, state, raw_df, close_day):
+    events = _parse_records(raw_df)
+    if state == "STARTED":
+        instant = ingest_journal(spark, raw_df, batch_id, ingest_date=close_day)
+        coordinator.update_instant(batch_id, "journal", instant)
+        state = "JOURNAL_COMMITTED"
+    if state in ("JOURNAL_COMMITTED", "TRANSACTIONS_COMMITTED"):
+        states, accepted = reconstruct_transaction_chains(spark, events)
+        if state == "JOURNAL_COMMITTED":
+            instant = process_transactions(spark, [e for chain in accepted.values() for e in chain], batch_id, tx_states=states)
+            coordinator.update_instant(batch_id, "transaction", instant)
+        instant = process_postings(spark, states, accepted, batch_id, close_day, coordinator=coordinator)
+        coordinator.update_instant(batch_id, "posting", instant)
+        state = "POSTINGS_COMMITTED"
+    if state != "POSTINGS_COMMITTED":
+        raise RuntimeError(f"Unsupported batch state {state}")
+    coordinator.complete_batch(batch_id)
+
+
+def run_batch(spark, coordinator: BatchCoordinator, brokers=None, topic=None,
+              close_day=None, start_offsets=None, end_offsets=None) -> bool:
+    """Execute one cycle under the shared ingestion lock."""
     brokers = brokers or os.environ.get("KAFKA_BROKERS", "kafka:9092")
-    topic = topic or os.environ.get("KAFKA_TOPIC", "swipeline.lifecycle.v1")
+    topic = topic or os.environ.get("KAFKA_TOPIC", "swipeline.decisions.v1,swipeline.lifecycle.v1")
     close_day = close_day or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-
-    # Acquire advisory lock 72002
     if not coordinator.acquire_advisory_lock(72002):
-        logger.info("Advisory lock 72002 busy; skipping batch run")
         return False
-
     try:
-        # Check for uncompleted batch recovery first
         pending = coordinator.get_pending_batch()
         if pending:
-            logger.info("Resuming uncompleted pending batch: %s", pending["batch_id"])
-            resume_pending_batch(
-                spark,
-                coordinator,
-                pending["batch_id"],
-                brokers=brokers,
-                topic=topic,
-                close_day=close_day,
-            )
+            resume_pending_batch(spark, coordinator, pending["batch_id"], brokers, topic, close_day)
             return True
-
+        if end_offsets is None:
+            end_offsets = get_kafka_end_offsets(spark, brokers, topic.split(","))
+        if not end_offsets:
+            raise RuntimeError("Kafka end offset vector is empty")
         if start_offsets is None:
             start_offsets = coordinator.get_latest_offsets()
-            if not start_offsets:
-                start_offsets = {topic: {"0": 0, "1": 0, "2": 0, "3": 0}}
-
-        if end_offsets is None:
-            end_offsets = get_kafka_end_offsets(spark, brokers, [topic])
-
-        if not end_offsets or start_offsets == end_offsets:
-            logger.info("No new Kafka offsets to ingest")
+        for t, partitions in start_offsets.items():
+            if t not in end_offsets or not set(partitions).issubset(end_offsets[t]):
+                raise RuntimeError("Kafka partition disappeared from end offset vector")
+        start_offsets = {t: {p: start_offsets.get(t, {}).get(p, 0) for p in parts} for t, parts in end_offsets.items()}
+        for t, parts in end_offsets.items():
+            if any(start_offsets[t][p] < 0 or end < start_offsets[t][p] for p, end in parts.items()):
+                raise RuntimeError("Invalid Kafka offset range")
+        if start_offsets == end_offsets:
             return False
-
         batch_id = coordinator.start_batch(start_offsets, end_offsets)
-        raw_df = read_kafka_range(spark, brokers, topic, start_offsets, end_offsets)
-
-        # 1. Journal ingestion
-        j_instant = ingest_journal(spark, raw_df, batch_id, ingest_date=close_day)
-        coordinator.update_instant(batch_id, "journal", j_instant)
-
-        # Parse envelopes for reduction and posting reconstruction
-        parsed_events = []
-        try:
-            for row in raw_df.collect():
-                val = row.value.decode("utf-8") if isinstance(row.value, bytes) else str(row.value)
-                parsed_events.append(parse_event_envelope(val))
-        except Exception as e:
-            logger.warning("Error parsing envelopes from Kafka dataframe: %s", e)
-
-        # 2. Transaction reduction & upsert
-        t_instant = process_transactions(spark, parsed_events, batch_id)
-        coordinator.update_instant(batch_id, "transaction", t_instant)
-
-        # 3. Financial postings reconstruction & write
-        events_by_tx = {}
-        for evt in parsed_events:
-            tid = evt.get("transaction_id")
-            if tid:
-                events_by_tx.setdefault(tid, []).append(evt)
-
-        # Build map of current states for posting reconstruction
-        reducer = TransactionReducer()
-        tx_states = {}
-        for tid, evts in events_by_tx.items():
-            state, _ = reducer.reduce_transaction(None, evts)
-            if state:
-                tx_states[tid] = state
-
-        p_instant = process_postings(
-            spark, tx_states, events_by_tx, batch_id, close_day
-        )
-        coordinator.update_instant(batch_id, "posting", p_instant)
-
-        # 4. Mark batch complete (offsets advance only now)
-        coordinator.complete_batch(batch_id)
+        raw_df = read_kafka_range(spark, brokers, ",".join(end_offsets), start_offsets, end_offsets)
+        _finish_batch(spark, coordinator, batch_id, "STARTED", raw_df, close_day)
         return True
-
-
     finally:
         coordinator.release_advisory_lock(72002)
 
 
-def resume_pending_batch(
-    spark,
-    coordinator: BatchCoordinator,
-    batch_id: str,
-    brokers: str | None = None,
-    topic: str | None = None,
-    close_day: str | None = None,
-) -> None:
-    """Resumes an uncompleted batch from its persisted state checkpoints."""
+def resume_pending_batch(spark, coordinator: BatchCoordinator, batch_id: str,
+                         brokers=None, topic=None, close_day=None) -> None:
+    """Resume the stable offset vector using the same durable reconstruction."""
     brokers = brokers or os.environ.get("KAFKA_BROKERS", "kafka:9092")
-    topic = topic or os.environ.get("KAFKA_TOPIC", "swipeline.lifecycle.v1")
     close_day = close_day or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-
     pending = coordinator.get_pending_batch()
     if not pending or pending["batch_id"] != batch_id:
         return
-
-    start_offsets = pending["starting_offsets"]
-    end_offsets = pending["ending_offsets"]
-    state = pending["state"]
-
-    raw_df = read_kafka_range(spark, brokers, topic, start_offsets, end_offsets)
-    parsed_events = []
-    try:
-        for row in raw_df.collect():
-            val = row.value.decode("utf-8") if isinstance(row.value, bytes) else str(row.value)
-            parsed_events.append(parse_event_envelope(val))
-    except Exception as e:
-        logger.warning("Error parsing envelopes in resume_pending_batch: %s", e)
-
-    events_by_tx = {}
-    for evt in parsed_events:
-        tid = evt.get("transaction_id")
-        if tid:
-            events_by_tx.setdefault(tid, []).append(evt)
-
-    reducer = TransactionReducer()
-    tx_states = {}
-    for tid, evts in events_by_tx.items():
-        st, _ = reducer.reduce_transaction(None, evts)
-        if st:
-            tx_states[tid] = st
-
-    if state == "STARTED":
-        j_instant = ingest_journal(spark, raw_df, batch_id, ingest_date=close_day)
-        coordinator.update_instant(batch_id, "journal", j_instant)
-        state = "JOURNAL_COMMITTED"
-
-
-
-
-    if state == "JOURNAL_COMMITTED":
-        t_instant = process_transactions(spark, parsed_events, batch_id)
-        coordinator.update_instant(batch_id, "transaction", t_instant)
-        state = "TRANSACTIONS_COMMITTED"
-
-    if state == "TRANSACTIONS_COMMITTED":
-        p_instant = process_postings(
-            spark, tx_states, events_by_tx, batch_id, close_day
-        )
-        coordinator.update_instant(batch_id, "posting", p_instant)
-        state = "POSTINGS_COMMITTED"
-
-    coordinator.complete_batch(batch_id)
+    if pending["state"] == "POSTINGS_COMMITTED":
+        coordinator.complete_batch(batch_id)
+        return
+    raw_df = read_kafka_range(spark, brokers, ",".join(pending["ending_offsets"]), pending["starting_offsets"], pending["ending_offsets"])
+    _finish_batch(spark, coordinator, batch_id, pending["state"], raw_df, close_day)
 
 
 def parse_args(argv=None):
@@ -436,7 +391,9 @@ def run_loop(
         try:
             run_batch(spark, coordinator)
         except Exception as e:
-            logger.error("Error running batch: %s", e)
+            logger.exception("Error running batch: %s", e)
+            if once:
+                raise
 
         loops += 1
         if once or (max_loops is not None and loops >= max_loops):
@@ -466,13 +423,13 @@ def main():
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    run_loop(
-        spark,
-        coordinator,
-        once=args.once,
-        interval_secs=interval_secs,
-        stop_event=stop_event,
-    )
+    try:
+        run_loop(spark, coordinator, once=args.once, interval_secs=interval_secs, stop_event=stop_event)
+    finally:
+        try:
+            coordinator.close()
+        finally:
+            spark.stop()
 
 
 if __name__ == "__main__":
