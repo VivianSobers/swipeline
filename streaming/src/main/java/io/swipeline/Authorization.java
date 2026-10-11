@@ -123,10 +123,14 @@ public final class Authorization {
   canonical.getSideOutput(Canonicalizer.DLQ).sinkTo(canonicalDlqSink(brokers)).uid("canonical-dlq-v1").setParallelism(canonParallelism);
   return env;
  }
- public static void main(String[] args) throws Exception {
+ static StreamExecutionEnvironment environment(java.util.Map<String,String> variables) {
   var cfg=new Configuration();
-  cfg.setString("swipeline.authorization.buffer-timeout-ms",System.getenv().getOrDefault("AUTH_BUFFER_TIMEOUT_MS","0"));
-  build(cfg,System.getenv().getOrDefault("KAFKA_BROKERS","kafka:9092"),
-   Integer.parseInt(System.getenv().getOrDefault("AUTH_PARALLELISM","2"))).execute("authorization");
+  cfg.setString("swipeline.authorization.buffer-timeout-ms",variables.getOrDefault("AUTH_BUFFER_TIMEOUT_MS","0"));
+  return build(cfg,variables.getOrDefault("KAFKA_BROKERS","kafka:9092"),
+   Integer.parseInt(variables.getOrDefault("AUTH_PARALLELISM","2")),
+   Integer.parseInt(variables.getOrDefault("CANON_PARALLELISM","1")));
+ }
+ public static void main(String[] args) throws Exception {
+  environment(System.getenv()).execute("authorization");
  }
 }

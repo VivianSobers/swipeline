@@ -227,3 +227,23 @@ func TestRenderedJobManagerRestoreEntrypoint(t *testing.T) {
 		t.Fatal("streaming image does not install the restore entrypoint")
 	}
 }
+
+func TestRenderedCanonicalParallelism(t *testing.T) {
+	path := os.Getenv("SWIPELINE_COMPOSE_JSON")
+	if path == "" {
+		t.Skip("run make deploy-check")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Services map[string]struct{ Environment map[string]string }
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if got := doc.Services["flink-jobmanager"].Environment["CANON_PARALLELISM"]; got != "1" {
+		t.Fatalf("canonicalizer parallelism = %q, want 1", got)
+	}
+}
