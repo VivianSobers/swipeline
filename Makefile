@@ -42,4 +42,5 @@ m3-druid-smoke:
 superset-check:
 	docker build -f deploy/superset.Dockerfile -t swipeline-superset:m3 .
 	docker run --rm swipeline-superset:m3 python -c "import importlib.metadata, pydruid, psycopg2; print(importlib.metadata.version('pydruid'))"
+	docker run --rm swipeline-superset:m3 python /app/test_config.py
 
