@@ -11,6 +11,15 @@ class TestBatchCoordinator(unittest.TestCase):
         self.mock_cursor = MagicMock()
         self.mock_conn.cursor.return_value.__enter__.return_value = self.mock_cursor
 
+    def test_dsn_from_environment(self):
+        with patch.dict("os.environ", {"POSTGRES_DSN": "postgres://env:5432/gateway"}, clear=True):
+            self.assertEqual(BatchCoordinator().dsn, "postgres://env:5432/gateway")
+
+    def test_missing_dsn_is_rejected(self):
+        with patch.dict("os.environ", {}, clear=True):
+            with self.assertRaises(ValueError):
+                BatchCoordinator()
+
     @patch("batch.db.psycopg2.connect")
     def test_start_batch(self, mock_connect):
         mock_connect.return_value = self.mock_conn
