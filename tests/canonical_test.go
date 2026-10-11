@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/VivianSobers/swipeline/internal/auth"
+	"github.com/VivianSobers/swipeline/internal/authorize"
+	"github.com/VivianSobers/swipeline/internal/store"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -66,6 +68,29 @@ func getFlinkCompletedCheckpoints(ctx context.Context, flinkBase, jid string) (i
 		return 0, err
 	}
 	return doc.Counts.Completed, nil
+}
+
+func getFlinkRestoredCheckpoints(ctx context.Context, flinkBase, jid string) (int64, error) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, "GET", flinkBase+"/jobs/"+jid+"/checkpoints", nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	var doc struct {
+		Counts struct {
+			Completed int64 `json:"completed"`
+			Restored  int64 `json:"restored"`
+		} `json:"counts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		return 0, err
+	}
+	return doc.Counts.Restored, nil
 }
 
 func TestCanonicalDecisionsMatchFinals(t *testing.T) {
@@ -470,5 +495,132 @@ func TestCanonicalQuarantineConflictingRawDecisions(t *testing.T) {
 	}
 	if canonAmount != originalAmount {
 		t.Fatalf("canonical record for %s changed: got %v, want original %v", string(target.Key), canonAmount, originalAmount)
+	}
+}
+
+func TestCanonicalRestartWithoutDuplicates(t *testing.T) {
+	c := installedClient(t)
+	brokers := os.Getenv("SWIPELINE_KAFKA")
+	if brokers == "" {
+		t.Skip("run through make m2-demo")
+	}
+	flinkBase := os.Getenv("SWIPELINE_FLINK")
+	if flinkBase == "" {
+		flinkBase = "http://flink-jobmanager:8081"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	db, err := store.Open(ctx, os.Getenv("SWIPELINE_TEST_DB"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+
+	cfg := installedConfig("installed-restart", 300, 50)
+	replayDone := make(chan error, 1)
+	go func() {
+		_, err := authorize.Run(ctx, cfg, c, "latency", 128)
+		replayDone <- err
+	}()
+
+	for {
+		var finalsCount int
+		err := db.DB.QueryRowContext(ctx, "SELECT count(*) FROM authorizations WHERE run_id=$1 AND status='FINAL'", cfg.Generator.RunID).Scan(&finalsCount)
+		if err == nil && finalsCount >= 100 {
+			break
+		}
+		select {
+		case err := <-replayDone:
+			t.Fatalf("replay finished before 100 finals: %v", err)
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for 100 finals")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	runFault(t, "restart-flink")
+
+	select {
+	case err := <-replayDone:
+		if err != nil {
+			t.Fatalf("replay failed: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for replay to finish")
+	}
+
+	finals := installedFinals(t, c, cfg)
+	if len(finals) != 300 {
+		t.Fatalf("expected 300 finals, got %d", len(finals))
+	}
+
+	canonConsumer, err := kgo.NewClient(
+		kgo.SeedBrokers(brokers),
+		kgo.ConsumeTopics("swipeline.decisions.v1"),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer canonConsumer.Close()
+
+	canonCounts := make(map[string]int)
+	var totalCanonRecords int
+	cCtx, cCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cCancel()
+	for len(canonCounts) < len(finals) {
+		fetch := canonConsumer.PollRecords(cCtx, 256)
+		if fetch.IsClientClosed() || cCtx.Err() != nil {
+			break
+		}
+		for _, r := range fetch.Records() {
+			var d struct {
+				RunID         string `json:"run_id"`
+				TransactionID string `json:"transaction_id"`
+			}
+			if json.Unmarshal(r.Value, &d) == nil && d.RunID == cfg.Generator.RunID {
+				canonCounts[d.TransactionID]++
+				totalCanonRecords++
+			}
+		}
+	}
+
+	if len(canonCounts) != len(finals) {
+		t.Fatalf("canonical count for %s = %d, want %d", cfg.Generator.RunID, len(canonCounts), len(finals))
+	}
+	if totalCanonRecords != len(finals) {
+		t.Fatalf("total canonical records for %s = %d, want %d", cfg.Generator.RunID, totalCanonRecords, len(finals))
+	}
+	for _, f := range finals {
+		if count := canonCounts[f.TransactionID]; count != 1 {
+			t.Fatalf("transaction %s has %d canonical records, want 1", f.TransactionID, count)
+		}
+	}
+
+	var jidAfter string
+	for attempt := 0; attempt < 30; attempt++ {
+		jidAfter, err = getFlinkJob(ctx, flinkBase)
+		if err == nil {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if jidAfter == "" {
+		t.Fatal("no running flink job found after restart")
+	}
+
+	var restored int64
+	for attempt := 0; attempt < 30; attempt++ {
+		restored, err = getFlinkRestoredCheckpoints(ctx, flinkBase, jidAfter)
+		if err == nil && restored > 0 {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if restored != 1 {
+		t.Fatalf("flink job restored checkpoints = %d, want 1", restored)
 	}
 }
