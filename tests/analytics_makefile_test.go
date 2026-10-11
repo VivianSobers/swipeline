@@ -118,3 +118,42 @@ func TestAnalyticsMakefileSupersetPassword(t *testing.T) {
 		}
 	}
 }
+
+func TestAnalyticsMakefilePreflightOrder(t *testing.T) {
+	data, err := os.ReadFile("Makefile")
+	if err != nil {
+		data, err = os.ReadFile("../Makefile")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	content := string(data)
+
+	// Check m3-druid-smoke
+	idxSmoke := strings.Index(content, "m3-druid-smoke:")
+	if idxSmoke == -1 {
+		t.Fatal("Makefile missing m3-druid-smoke target")
+	}
+	blockSmoke := content[idxSmoke:]
+	if next := strings.Index(blockSmoke[1:], "\n.PHONY:"); next != -1 {
+		blockSmoke = blockSmoke[:next+1]
+	}
+	smokeLines := strings.Split(strings.TrimSpace(blockSmoke), "\n")
+	if len(smokeLines) < 2 || !strings.Contains(smokeLines[1], "preflight.sh full") {
+		t.Fatalf("m3-druid-smoke first step must call preflight.sh full, got: %s", smokeLines[1])
+	}
+
+	// Check m3-demo
+	idxDemo := strings.Index(content, "m3-demo:")
+	if idxDemo == -1 {
+		t.Fatal("Makefile missing m3-demo target")
+	}
+	blockDemo := content[idxDemo:]
+	if next := strings.Index(blockDemo[1:], "\n.PHONY:"); next != -1 {
+		blockDemo = blockDemo[:next+1]
+	}
+	demoLines := strings.Split(strings.TrimSpace(blockDemo), "\n")
+	if len(demoLines) < 2 || !strings.Contains(demoLines[1], "preflight.sh full") {
+		t.Fatalf("m3-demo first step must call preflight.sh full, got: %s", demoLines[1])
+	}
+}
