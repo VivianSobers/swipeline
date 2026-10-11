@@ -11,7 +11,7 @@ build:
 	$(GO_RUN) go build ./...
 .PHONY: deploy-check
 deploy-check:
-	@set -eu; config_file=$$(mktemp); trap 'rm -f "$$config_file"' EXIT; docker compose --profile core config --format json > "$$config_file"; docker run --rm --user "$$(id -u):$$(id -g)" -e GOCACHE=/tmp/go-cache -e GOFLAGS=-buildvcs=false -e SWIPELINE_COMPOSE_JSON=/compose.json -v "$(CURDIR):/src:ro,z" -v "$$config_file:/compose.json:ro,z" -w /src $(GO_IMAGE) go test ./tests -run TestRendered -v
+	@set -eu; config_file=$$(mktemp); full_file=$$(mktemp); trap 'rm -f "$$config_file" "$$full_file"' EXIT; docker compose --profile core config --format json > "$$config_file"; docker compose --profile full config --format json > "$$full_file"; docker run --rm --user "$$(id -u):$$(id -g)" -e GOCACHE=/tmp/go-cache -e GOFLAGS=-buildvcs=false -e SWIPELINE_COMPOSE_JSON=/compose.json -e SWIPELINE_FULL_COMPOSE_JSON=/compose-full.json -e COMPOSE_PROFILES=$${COMPOSE_PROFILES:-} -v "$(CURDIR):/src:ro,z" -v "$$config_file:/compose.json:ro,z" -v "$$full_file:/compose-full.json:ro,z" -w /src $(GO_IMAGE) go test ./tests -run TestRendered -v
 	docker compose run --rm --no-deps --entrypoint /bin/promtool prometheus check config /etc/prometheus/prometheus.yml
 .PHONY: demo
 demo:
@@ -32,3 +32,47 @@ m2-demo:
 .PHONY: m2-latency
 m2-latency:
 	@sh tests/m2-latency.sh
+.PHONY: m3-druid-smoke
+m3-druid-smoke:
+	@sh tests/preflight.sh full
+	@set -eu; project=swipeline-m3-smoke-$$$$; \
+	trap 'status=$$?; if [ $$status -ne 0 ]; then COMPOSE_PROFILES=full docker compose -p "$$project" logs; fi; COMPOSE_PROFILES=full docker compose -p "$$project" down -v --remove-orphans; exit $$status' EXIT TERM INT; \
+	COMPOSE_PROFILES=full docker compose -p "$$project" up -d --wait postgres kafka druid-zk druid-coordinator-overlord druid-broker druid-historical druid-middlemanager druid-router; \
+	docker run --rm --network "$${project}_default" --user "$$(id -u):$$(id -g)" -v "$(CURDIR):/src:ro,z" -w /src $(GO_IMAGE) sh -ec 'curl -fsS -H "Content-Type: application/json" -d "{\"query\":\"SELECT 1\"}" http://druid-router:8888/druid/v2/sql | grep -q "1"'
+.PHONY: m3-demo
+m3-demo:
+	@sh tests/preflight.sh full
+	@sh tests/m3-demo.sh
+.PHONY: superset-check
+superset-check:
+	docker build -f deploy/superset.Dockerfile -t swipeline-superset:m3 .
+	docker run --rm swipeline-superset:m3 python -c "import pydruid, psycopg2; print(pydruid.__version__)"
+	docker run --rm swipeline-superset:m3 python /app/test_config.py
+.PHONY: superset-password
+superset-password:
+	docker compose exec -T superset cat /secrets/admin-password
+.PHONY: dashboards
+dashboards:
+	docker run --rm --user "$$(id -u):$$(id -g)" -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false -v "$(CURDIR):/src:z" -w /src $(GO_IMAGE) go run ./tools/dashboard
+.PHONY: dashboard-bundle
+dashboard-bundle:
+	docker run --rm --user "$$(id -u):$$(id -g)" -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false -v "$(CURDIR):/src:z" -w /src $(GO_IMAGE) go run ./tools/dashboard -bundle
+.PHONY: m4-seaweedfs-smoke
+m4-seaweedfs-smoke:
+	@set -eu; project=swipeline-m4-smoke-$$$$; \
+	trap 'status=$$?; if [ $$status -ne 0 ]; then docker compose -p "$$project" logs; fi; docker compose -p "$$project" down -v --remove-orphans; exit $$status' EXIT TERM INT; \
+	docker compose -p "$$project" up -d --wait seaweedfs; \
+	docker run --rm --network "$${project}_default" --user "$$(id -u):$$(id -g)" -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false -e SWIPELINE_S3_ENDPOINT=http://seaweedfs:8333 -v "$(CURDIR):/src:ro,z" -w /src $(GO_IMAGE) go test ./tests -run TestSeaweedFSS3Compatibility -count=1 -v
+.PHONY: spark-check
+spark-check:
+	docker build -f deploy/spark.Dockerfile -t swipeline-spark:m4 .
+	docker run --rm swipeline-spark:m4 python -c "import pyspark, psycopg2; assert pyspark.__version__ == '4.1.3'; sc = pyspark.SparkContext('local[1]', 'check'); jvm = sc._jvm; jvm.org.apache.spark.sql.hudi.HoodieSparkSessionExtension(); sc.stop(); print(pyspark.__version__)"
+.PHONY: m4-storage
+m4-storage:
+	docker compose up -d --wait postgres kafka seaweedfs
+	docker compose exec -T kafka bash /opt/swipeline/topics.sh
+.PHONY: m4-demo
+m4-demo:
+	@sh tests/preflight.sh core
+	@sh tests/m4-demo.sh
+
