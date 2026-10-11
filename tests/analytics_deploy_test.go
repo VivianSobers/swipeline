@@ -422,3 +422,26 @@ func TestReadmeWatchTheNetwork(t *testing.T) {
 		}
 	}
 }
+
+func TestReadmeAnalyticsLimits(t *testing.T) {
+	path := "README.md"
+	if _, err := os.Stat(path); err != nil {
+		path = "../README.md"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	for _, want := range []string{
+		"checkpoint interval",
+		"supervisor offsets",
+		"never reset offsets",
+		"14 GB laptop",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("README.md missing %q", want)
+		}
+	}
+}

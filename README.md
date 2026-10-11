@@ -168,6 +168,15 @@ Full acceptance runs via `make m3-demo` on the four-core reference server:
 | Ingestion freshness lag | (to be recorded after server run) |
 | Reconciliation status | (to be recorded after server run) |
 
+### Analytics limits
+
+Operational limits for network analytics:
+
+- Canonical decision visibility lags transactions by up to one checkpoint interval (10 s) plus processing.
+- Druid exactly-once relies on intact supervisor offsets in Kafka and metadata storage.
+- Never reset offsets on a populated datasource (rebuild into a fresh datasource instead). You must never reset offsets on an active datasource.
+- The full profile does not fit the 14 GB laptop or standard two-core CI runners; run full acceptance on the four-core reference server.
+
 ## Develop and check
 
 ```sh
