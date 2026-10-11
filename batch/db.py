@@ -12,12 +12,9 @@ class BatchCoordinator:
     """Coordinates batch ingestion progress and state transitions in PostgreSQL."""
 
     def __init__(self, dsn: str | None = None):
-        self.dsn = (
-            dsn
-            or os.environ.get("POSTGRES_DSN")
-            or os.environ.get("DATABASE_URL")
-            or "postgres://gateway:gateway-local@postgres:5432/gateway?sslmode=disable"
-        )
+        self.dsn = dsn or os.environ.get("POSTGRES_DSN") or os.environ.get("DATABASE_URL")
+        if not self.dsn:
+            raise ValueError("POSTGRES_DSN or DATABASE_URL must be set")
         self._conn = None
 
     def _get_connection(self):
