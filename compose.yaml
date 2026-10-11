@@ -74,6 +74,12 @@ services:
         read_only: true
         bind:
           selinux: z
+      - type: bind
+        source: ./deploy/postgres-analytics-init.sql
+        target: /docker-entrypoint-initdb.d/002-analytics.sql
+        read_only: true
+        bind:
+          selinux: z
     healthcheck:
       test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U postgres -d gateway"]
       interval: 2s
@@ -176,6 +182,7 @@ services:
     environment:
       KAFKA_BROKERS: kafka:9092
       AUTH_PARALLELISM: "2"
+      CANON_PARALLELISM: "1"
       AUTH_BUFFER_TIMEOUT_MS: "${SWIPELINE_AUTH_BUFFER_TIMEOUT_MS:-0}"
       FLINK_PROPERTIES: "${SWIPELINE_FLINK_PROPERTIES:-}"
     volumes:
@@ -223,9 +230,292 @@ services:
       options:
         max-size: 5m
         max-file: "2"
+  seaweedfs:
+    profiles: [core, full]
+    image: chrislusf/seaweedfs:4.48
+    mem_limit: 512m
+    command: ["server", "-s3", "-s3.port=8333", "-dir=/data"]
+    ports:
+      - "127.0.0.1:${SWIPELINE_SEAWEED_PORT:-8333}:8333"
+    volumes:
+      - seaweedfs-data:/data
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8333/"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+  spark-batch:
+    profiles: [core, full]
+    image: swipeline-spark:m4
+    build:
+      context: .
+      dockerfile: deploy/spark.Dockerfile
+    mem_limit: 2048m
+    environment:
+      SPARK_DRIVER_MEMORY: 1280m
+      SPARK_EXECUTOR_MEMORY: 1280m
+      S3_ENDPOINT: http://seaweedfs:8333
+      KAFKA_BROKERS: kafka:9092
+      POSTGRES_DSN: postgres://gateway:gateway-local@postgres:5432/gateway?sslmode=disable
+    volumes:
+      - spark-spill:/tmp/spark-spill
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_healthy
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+  druid-zk:
+    profiles: [full]
+    image: zookeeper:3.9.6
+    mem_limit: 256m
+    environment:
+      ZOO_4LW_COMMANDS_WHITELIST: ruok
+      JVMFLAGS: "-Xms128m -Xmx128m"
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD-SHELL, "echo ruok | nc 127.0.0.1 2181 | grep imok"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: on-failure
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+  druid-coordinator-overlord:
+    profiles: [full]
+    image: apache/druid:38.0.0
+    command: [coordinator]
+    mem_limit: 512m
+    env_file: deploy/druid.env
+    environment:
+      druid_coordinator_asOverlord_enabled: "true"
+      druid_coordinator_asOverlord_overlordService: druid/overlord
+      DRUID_XMX: 256m
+      DRUID_XMS: 256m
+      DRUID_MAXDIRECTMEMORYSIZE: 64m
+    volumes:
+      - druid-shared:/opt/shared
+    depends_on:
+      postgres:
+        condition: service_healthy
+      druid-zk:
+        condition: service_healthy
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8081/status/health | grep -q true"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: on-failure
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+  druid-broker:
+    profiles: [full]
+    image: apache/druid:38.0.0
+    command: [broker]
+    mem_limit: 512m
+    env_file: deploy/druid.env
+    environment:
+      DRUID_XMX: 256m
+      DRUID_XMS: 256m
+      DRUID_MAXDIRECTMEMORYSIZE: 160m
+      druid_processing_buffer_sizeBytes: "50000000"
+    depends_on:
+      druid-zk:
+        condition: service_healthy
+      druid-coordinator-overlord:
+        condition: service_healthy
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8082/status/health | grep -q true"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: on-failure
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+  druid-historical:
+    profiles: [full]
+    image: apache/druid:38.0.0
+    command: [historical]
+    mem_limit: 1024m
+    env_file: deploy/druid.env
+    environment:
+      DRUID_XMX: 384m
+      DRUID_XMS: 384m
+      DRUID_MAXDIRECTMEMORYSIZE: 400m
+      druid_segmentCache_locations: '[{"path":"/opt/druid/var/segment-cache","maxSize":2000000000}]'
+    volumes:
+      - druid-shared:/opt/shared
+      - druid-cache:/opt/druid/var/segment-cache
+    depends_on:
+      druid-zk:
+        condition: service_healthy
+      druid-coordinator-overlord:
+        condition: service_healthy
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8083/status/health | grep -q true"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: on-failure
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+  druid-middlemanager:
+    profiles: [full]
+    image: apache/druid:38.0.0
+    command: [middleManager]
+    mem_limit: 1792m
+    env_file: deploy/druid.env
+    environment:
+      DRUID_XMX: 128m
+      DRUID_XMS: 128m
+      druid_worker_capacity: "2"
+      druid_indexer_runner_javaOptsArray: '["-server","-Xms256m","-Xmx256m","-XX:MaxDirectMemorySize=256m"]'
+      druid_indexer_fork_property_druid_processing_buffer_sizeBytes: "25000000"
+    volumes:
+      - druid-shared:/opt/shared
+    depends_on:
+      druid-zk:
+        condition: service_healthy
+      druid-coordinator-overlord:
+        condition: service_healthy
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8091/status/health | grep -q true"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: on-failure
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+  druid-router:
+    profiles: [full]
+    image: apache/druid:38.0.0
+    command: [router]
+    mem_limit: 256m
+    env_file: deploy/druid.env
+    environment:
+      DRUID_XMX: 128m
+      DRUID_XMS: 128m
+      druid_router_managementProxy_enabled: "true"
+    ports:
+      - "127.0.0.1:${SWIPELINE_DRUID_PORT:-8888}:8888"
+    depends_on:
+      druid-zk:
+        condition: service_healthy
+      druid-coordinator-overlord:
+        condition: service_healthy
+      druid-broker:
+        condition: service_healthy
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8888/status/health | grep -q true"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: on-failure
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+  analytics-bootstrap:
+    profiles: [full]
+    image: swipeline-replayer:m1
+    restart: "no"
+    mem_limit: 128m
+    command:
+      - bootstrap
+      - --druid
+      - http://druid-router:8888
+      - --spec
+      - /etc/swipeline/supervisor.json
+      - --wait
+      - 5m
+    volumes:
+      - type: bind
+        source: ./deploy/druid/supervisor.json
+        target: /etc/swipeline/supervisor.json
+        read_only: true
+        bind:
+          selinux: z
+    depends_on:
+      druid-router:
+        condition: service_healthy
+      druid-coordinator-overlord:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+  superset:
+    profiles: [full]
+    image: swipeline-superset:m3
+    restart: on-failure
+    mem_limit: 768m
+    command: ["/app/init.sh"]
+    ports:
+      - "127.0.0.1:${SWIPELINE_SUPERSET_PORT:-8088}:8088"
+    volumes:
+      - superset-secrets:/secrets
+    depends_on:
+      postgres:
+        condition: service_healthy
+      analytics-bootstrap:
+        condition: service_completed_successfully
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8088/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
 volumes:
   preview-data:
   prometheus-data:
   postgres-data:
   kafka-data:
   flink-state:
+  druid-shared:
+  druid-cache:
+  superset-secrets:
+  seaweedfs-data:
+  spark-spill:
