@@ -62,3 +62,69 @@ func TestRenderedPostgresInitCreatesAnalyticsDatabases(t *testing.T) {
 		t.Fatal("postgres does not mount /docker-entrypoint-initdb.d/002-analytics.sql")
 	}
 }
+
+func TestRenderedAnalyticsProfileTopology(t *testing.T) {
+	services := rendered(t)
+	profile := os.Getenv("COMPOSE_PROFILES")
+
+	druidServices := map[string]struct {
+		image    string
+		mib      int64
+		hostPort bool
+	}{
+		"druid-zk":                   {"zookeeper:3.9.6", 256, false},
+		"druid-coordinator-overlord": {"apache/druid:38.0.0", 512, false},
+		"druid-broker":               {"apache/druid:38.0.0", 512, false},
+		"druid-router":               {"apache/druid:38.0.0", 256, true},
+		"druid-historical":           {"apache/druid:38.0.0", 1024, false},
+		"druid-middlemanager":        {"apache/druid:38.0.0", 1792, false},
+	}
+
+	if profile != "full" {
+		for name := range druidServices {
+			if _, ok := services[name]; ok {
+				t.Fatalf("service %s rendered in default profile", name)
+			}
+		}
+		return
+	}
+
+	expectedMissing := map[string]bool{
+		"druid-zk":                   true,
+		"druid-coordinator-overlord": true,
+		"druid-broker":               true,
+		"druid-router":               true,
+		"druid-historical":           true,
+		"druid-middlemanager":        true,
+	}
+
+	for name, want := range druidServices {
+		s, ok := services[name]
+		if !ok {
+			if expectedMissing[name] {
+				continue
+			}
+			t.Fatalf("missing service in full profile: %s", name)
+		}
+		if expectedMissing[name] {
+			t.Fatalf("service %s exists but was marked expectedMissing", name)
+		}
+		if s.Image != want.image {
+			t.Fatalf("%s pin changed: %s (want %s)", name, s.Image, want.image)
+		}
+		if s.MemLimit != want.mib<<20 || s.Privileged {
+			t.Fatalf("%s budget/privilege regression: limit=%d privileged=%v", name, s.MemLimit, s.Privileged)
+		}
+		if len(s.Profiles) != 1 || s.Profiles[0] != "full" {
+			t.Fatalf("%s profile regression: %v", name, s.Profiles)
+		}
+		if !want.hostPort && len(s.Ports) != 0 {
+			t.Fatalf("internal service published to host: %s", name)
+		}
+		for _, port := range s.Ports {
+			if port.HostIP != "127.0.0.1" {
+				t.Fatalf("%s public port must bind 127.0.0.1: %+v", name, port)
+			}
+		}
+	}
+}
