@@ -369,6 +369,37 @@ services:
       options:
         max-size: 5m
         max-file: "2"
+  druid-router:
+    profiles: [full]
+    image: apache/druid:38.0.0
+    command: [router]
+    mem_limit: 256m
+    env_file: deploy/druid.env
+    environment:
+      DRUID_XMX: 128m
+      DRUID_XMS: 128m
+      druid_router_managementProxy_enabled: "true"
+    ports:
+      - "127.0.0.1:${SWIPELINE_DRUID_PORT:-8888}:8888"
+    depends_on:
+      druid-zk:
+        condition: service_healthy
+      druid-coordinator-overlord:
+        condition: service_healthy
+      druid-broker:
+        condition: service_healthy
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8888/status/health | grep -q true"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: on-failure
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
 volumes:
   preview-data:
   prometheus-data:
