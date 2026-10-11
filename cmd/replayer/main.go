@@ -24,7 +24,6 @@ import (
 	"github.com/VivianSobers/swipeline/internal/generator"
 	"github.com/VivianSobers/swipeline/internal/inspect"
 	"github.com/VivianSobers/swipeline/internal/preview"
-
 	"github.com/VivianSobers/swipeline/internal/reconcile"
 	"github.com/VivianSobers/swipeline/internal/replay"
 )
