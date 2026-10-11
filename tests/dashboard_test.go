@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/VivianSobers/swipeline/internal/dashboard"
 )
 
 var allowedColumns = map[string]bool{
@@ -192,6 +194,47 @@ func TestDruidDatabaseAndDataset(t *testing.T) {
 	for col, _ := range allowedColumns {
 		if !strings.Contains(dsContent, "column_name: "+col) {
 			t.Errorf("dataset missing column %s", col)
+		}
+	}
+}
+
+func TestThroughputAndApprovalCharts(t *testing.T) {
+	chartsDir := "dashboards/payments-operations/charts"
+	if _, err := os.Stat(chartsDir); err != nil {
+		chartsDir = "../dashboards/payments-operations/charts"
+	}
+	queriesDir := "dashboards/queries"
+	if _, err := os.Stat(queriesDir); err != nil {
+		queriesDir = "../dashboards/queries"
+	}
+
+	for _, name := range []string{"tps", "approval_rate"} {
+		chartFile := filepath.Join(chartsDir, name+".yaml")
+		data, err := os.ReadFile(chartFile)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", chartFile, err)
+		}
+		sqlData, err := os.ReadFile(filepath.Join(queriesDir, name+".sql"))
+		if err != nil {
+			t.Fatalf("failed to read sql %s: %v", name, err)
+		}
+		var def dashboard.ChartDef
+		found := false
+		for _, d := range dashboard.ChartDefinitions {
+			if d.Name == name {
+				def = d
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("unknown chart %s", name)
+		}
+
+		want := dashboard.FormatChartYAML(def, string(sqlData))
+		got := string(data)
+		if got != want {
+			t.Errorf("chart %s committed YAML does not match generator output:\ngot:\n%s\nwant:\n%s", name, got, want)
 		}
 	}
 }
