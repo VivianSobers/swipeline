@@ -283,3 +283,51 @@ func TestDeclineAndFraudCharts(t *testing.T) {
 		}
 	}
 }
+
+func TestLatencyAndFreshnessCharts(t *testing.T) {
+	chartsDir := "dashboards/payments-operations/charts"
+	if _, err := os.Stat(chartsDir); err != nil {
+		chartsDir = "../dashboards/payments-operations/charts"
+	}
+	queriesDir := "dashboards/queries"
+	if _, err := os.Stat(queriesDir); err != nil {
+		queriesDir = "../dashboards/queries"
+	}
+
+	for _, name := range []string{"latency", "freshness"} {
+		chartFile := filepath.Join(chartsDir, name+".yaml")
+		data, err := os.ReadFile(chartFile)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", chartFile, err)
+		}
+		sqlData, err := os.ReadFile(filepath.Join(queriesDir, name+".sql"))
+		if err != nil {
+			t.Fatalf("failed to read sql %s: %v", name, err)
+		}
+		var def dashboard.ChartDef
+		found := false
+		for _, d := range dashboard.ChartDefinitions {
+			if d.Name == name {
+				def = d
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("unknown chart %s", name)
+		}
+
+		want := dashboard.FormatChartYAML(def, string(sqlData))
+		got := string(data)
+		if got != want {
+			t.Errorf("chart %s committed YAML does not match generator output:\ngot:\n%s\nwant:\n%s", name, got, want)
+		}
+
+		if name == "latency" && !strings.Contains(got, "Druid latency measures admission to final choice and excludes the commit, with Prometheus as the authority for the 50/100 ms targets") {
+			t.Errorf("latency chart description missing target text")
+		}
+		if name == "freshness" && !strings.Contains(got, "approximate distinct cards in recent 60 seconds") {
+			t.Errorf("freshness chart description missing merchant_distinct_estimate label")
+		}
+	}
+}
