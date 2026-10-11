@@ -1,0 +1,64 @@
+package tests
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestRenderedPostgresInitCreatesAnalyticsDatabases(t *testing.T) {
+	path := "deploy/postgres-analytics-init.sql"
+	if _, err := os.Stat(path); err != nil {
+		path = "../deploy/postgres-analytics-init.sql"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(data)
+
+	for _, want := range []string{
+		"CREATE USER druid WITH PASSWORD 'druid-local';",
+		"CREATE DATABASE druid OWNER druid;",
+		"REVOKE ALL ON DATABASE druid FROM PUBLIC;",
+		"GRANT CONNECT ON DATABASE druid TO druid;",
+		"CREATE USER superset WITH PASSWORD 'superset-local';",
+		"CREATE DATABASE superset OWNER superset;",
+		"REVOKE ALL ON DATABASE superset FROM PUBLIC;",
+		"GRANT CONNECT ON DATABASE superset TO superset;",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("postgres-analytics-init.sql missing: %q", want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"GRANT ALL ON DATABASE gateway TO druid",
+		"GRANT CONNECT ON DATABASE gateway TO druid",
+		"GRANT ALL ON DATABASE gateway TO superset",
+		"GRANT CONNECT ON DATABASE gateway TO superset",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("postgres-analytics-init.sql grants gateway privileges to analytics users: %q", forbidden)
+		}
+	}
+
+	services := rendered(t)
+	pg, ok := services["postgres"]
+	if !ok {
+		t.Fatal("missing postgres service")
+	}
+	mounted := false
+	for _, v := range pg.Volumes {
+		if v.Target == "/docker-entrypoint-initdb.d/002-analytics.sql" && strings.HasSuffix(v.Source, "/deploy/postgres-analytics-init.sql") {
+			mounted = true
+			if !v.ReadOnly || v.Bind.SELinux != "z" {
+				t.Fatalf("postgres analytics init mount must be read-only and selinux z: %+v", v)
+			}
+			break
+		}
+	}
+	if !mounted {
+		t.Fatal("postgres does not mount /docker-entrypoint-initdb.d/002-analytics.sql")
+	}
+}
