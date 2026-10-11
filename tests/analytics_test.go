@@ -1,10 +1,12 @@
 package tests
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/VivianSobers/swipeline/internal/auth"
 	"github.com/VivianSobers/swipeline/internal/druid"
+	"github.com/VivianSobers/swipeline/internal/store"
 )
 
 // VerifyDruidDecisionFields checks the acceptance criteria for Unit 11.2:
@@ -248,6 +251,353 @@ func TestVerifyDruidDecisionFieldsUnit(t *testing.T) {
 	}
 }
 
+func fetchGatewayApprovalsAndFinals(ctx context.Context, gatewayURL, dbURL, runID string) (int64, int64, error) {
+	if dbURL != "" {
+		db, err := store.Open(ctx, dbURL)
+		if err == nil {
+			defer db.DB.Close()
+			var approvals, finals int64
+			err = db.DB.QueryRowContext(ctx, `SELECT
+				coalesce(count(*) FILTER (WHERE final_json->>'decision' = 'APPROVE'), 0),
+				coalesce(count(*) FILTER (WHERE status = 'FINAL'), 0)
+			FROM authorizations WHERE run_id = $1`, runID).Scan(&approvals, &finals)
+			if err == nil && finals > 0 {
+				return approvals, finals, nil
+			}
+		}
+	}
+
+	gwURL := strings.TrimRight(gatewayURL, "/")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, gwURL+"/v1/runs/"+runID+"/counts", nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+	var counts auth.RunCounts
+	if err := json.NewDecoder(resp.Body).Decode(&counts); err != nil {
+		return 0, 0, err
+	}
+
+	metricsReq, err := http.NewRequestWithContext(ctx, http.MethodGet, gwURL+"/metrics", nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	metricsResp, err := http.DefaultClient.Do(metricsReq)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer metricsResp.Body.Close()
+	metricsBody, _ := io.ReadAll(metricsResp.Body)
+	var approvals int64
+	lines := strings.Split(string(metricsBody), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "swipeline_gateway_final_decisions_total{") && strings.Contains(line, `decision="APPROVE"`) {
+			fields := strings.Fields(line)
+			if len(fields) == 2 {
+				var n int64
+				fmt.Sscanf(fields[1], "%d", &n)
+				approvals += n
+			}
+		}
+	}
+	return approvals, counts.Final, nil
+}
+
+// VerifyDashboardChartsThroughSuperset checks the acceptance criteria for Unit 11.3:
+// - Log in with the generated password
+// - List the dashboard by slug payments-operations
+// - POST each chart's query to /api/v1/chart/data
+// - Every response is 200 with at least one row for the run
+// - The approval-rate value equals approvals/finals from the gateway counts within 1e-9
+func VerifyDashboardChartsThroughSuperset(ctx context.Context, supersetURL, password, gatewayURL, dbURL, runID string) error {
+	client := &http.Client{Timeout: 30 * time.Second}
+	base := strings.TrimRight(supersetURL, "/")
+
+	// 1. Log in with the generated password
+	loginURL := fmt.Sprintf("%s/api/v1/security/login", base)
+	loginPayload := map[string]any{
+		"username": "admin",
+		"password": password,
+		"provider": "db",
+		"refresh":  true,
+	}
+	loginBytes, _ := json.Marshal(loginPayload)
+	loginReq, err := http.NewRequestWithContext(ctx, http.MethodPost, loginURL, bytes.NewReader(loginBytes))
+	if err != nil {
+		return fmt.Errorf("failed to create login request: %w", err)
+	}
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginResp, err := client.Do(loginReq)
+	if err != nil {
+		return fmt.Errorf("superset login failed: %w", err)
+	}
+	defer loginResp.Body.Close()
+	if loginResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(loginResp.Body)
+		return fmt.Errorf("superset login returned code %d: %s", loginResp.StatusCode, string(body))
+	}
+	var loginData struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(loginResp.Body).Decode(&loginData); err != nil {
+		return fmt.Errorf("failed to decode login response: %w", err)
+	}
+	token := loginData.AccessToken
+
+	// Fetch CSRF token if available
+	csrfURL := fmt.Sprintf("%s/api/v1/security/csrf_token/", base)
+	csrfReq, err := http.NewRequestWithContext(ctx, http.MethodGet, csrfURL, nil)
+	var csrfToken string
+	if err == nil {
+		csrfReq.Header.Set("Authorization", "Bearer "+token)
+		if csrfResp, err := client.Do(csrfReq); err == nil {
+			if csrfResp.StatusCode == http.StatusOK {
+				var csrfData struct {
+					Result string `json:"result"`
+				}
+				if err := json.NewDecoder(csrfResp.Body).Decode(&csrfData); err == nil {
+					csrfToken = csrfData.Result
+				}
+			}
+			csrfResp.Body.Close()
+		}
+	}
+
+	// 2. List the dashboard by slug payments-operations
+	dashURL := fmt.Sprintf("%s/api/v1/dashboard/payments-operations", base)
+	dashReq, err := http.NewRequestWithContext(ctx, http.MethodGet, dashURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create dashboard request: %w", err)
+	}
+	dashReq.Header.Set("Authorization", "Bearer "+token)
+	if csrfToken != "" {
+		dashReq.Header.Set("X-CSRFToken", csrfToken)
+	}
+	dashResp, err := client.Do(dashReq)
+	if err != nil {
+		return fmt.Errorf("failed to fetch dashboard by slug: %w", err)
+	}
+	defer dashResp.Body.Close()
+	if dashResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(dashResp.Body)
+		return fmt.Errorf("dashboard fetch returned code %d: %s", dashResp.StatusCode, string(body))
+	}
+
+	// 3. POST each chart's query to /api/v1/chart/data
+	queries := map[string]string{
+		"approval_rate":      `SELECT CASE WHEN COUNT(*) = 0 THEN NULL ELSE CAST(SUM(CASE WHEN "decision" = 'APPROVE' THEN 1 ELSE 0 END) AS DOUBLE) / COUNT(*) END AS "approval_rate" FROM "swipeline_decisions" WHERE "run_id" = :run_id`,
+		"decline_reasons":    `SELECT "reason", "decision_source", COUNT(*) AS "decline_count" FROM "swipeline_decisions" WHERE "run_id" = :run_id AND "decision" = 'DECLINE' GROUP BY "reason", "decision_source" ORDER BY "decline_count" DESC`,
+		"fraud_flags_by_mcc": `SELECT "mcc", 'CARD_TESTING' AS "flag", COUNT(*) AS "flag_count" FROM "swipeline_decisions" WHERE "run_id" = :run_id AND MV_CONTAINS("fraud_flags", 'CARD_TESTING') GROUP BY "mcc" UNION ALL SELECT "mcc", 'CARD_VELOCITY' AS "flag", COUNT(*) AS "flag_count" FROM "swipeline_decisions" WHERE "run_id" = :run_id AND MV_CONTAINS("fraud_flags", 'CARD_VELOCITY') GROUP BY "mcc" UNION ALL SELECT "mcc", 'SPEND_ANOMALY' AS "flag", COUNT(*) AS "flag_count" FROM "swipeline_decisions" WHERE "run_id" = :run_id AND MV_CONTAINS("fraud_flags", 'SPEND_ANOMALY') GROUP BY "mcc"`,
+		"freshness":          `SELECT MAX(__time) AS "max_time", (EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) - EXTRACT(EPOCH FROM MAX(__time))) AS "ingestion_lag_seconds", COUNT(*) AS "total_count", CASE WHEN COUNT(*) = 0 THEN 0.0 ELSE CAST(SUM(CASE WHEN "decision_source" = 'STAND_IN' THEN 1 ELSE 0 END) AS DOUBLE) / COUNT(*) END AS "standin_share" FROM "swipeline_decisions" WHERE "run_id" = :run_id`,
+		"latency":            `SELECT CASE WHEN "decision_latency_ms" < 5.0 THEN '0-5' WHEN "decision_latency_ms" < 10.0 THEN '5-10' WHEN "decision_latency_ms" < 20.0 THEN '10-20' WHEN "decision_latency_ms" < 35.0 THEN '20-35' WHEN "decision_latency_ms" < 50.0 THEN '35-50' ELSE '50+' END AS "latency_bucket", COUNT(*) AS "bucket_count", AVG("decision_latency_ms") AS "mean_latency_ms", MAX("decision_latency_ms") AS "max_latency_ms" FROM "swipeline_decisions" WHERE "run_id" = :run_id GROUP BY CASE WHEN "decision_latency_ms" < 5.0 THEN '0-5' WHEN "decision_latency_ms" < 10.0 THEN '5-10' WHEN "decision_latency_ms" < 20.0 THEN '10-20' WHEN "decision_latency_ms" < 35.0 THEN '20-35' WHEN "decision_latency_ms" < 50.0 THEN '35-50' ELSE '50+' END`,
+		"tps":                `SELECT TIME_FLOOR(__time, 'PT10S') AS "time_bucket", COUNT(*) / 10.0 AS "tps" FROM "swipeline_decisions" WHERE "run_id" = :run_id GROUP BY 1 ORDER BY 1`,
+	}
+
+	chartDataURL := fmt.Sprintf("%s/api/v1/chart/data", base)
+	var chartApprovalRate float64
+	var foundApprovalRate bool
+
+	for name, rawSQL := range queries {
+		renderedSQL := strings.ReplaceAll(rawSQL, ":run_id", fmt.Sprintf("'%s'", runID))
+		chartPayload := map[string]any{
+			"datasource": map[string]any{
+				"id":   "e4b3c2a1-0000-4000-8000-000000000002__table",
+				"type": "table",
+			},
+			"queries": []map[string]any{
+				{
+					"sql": renderedSQL,
+					"extras": map[string]any{
+						"template_params": map[string]any{
+							"run_id": runID,
+						},
+					},
+				},
+			},
+			"result_format": "json",
+		}
+		dataBytes, _ := json.Marshal(chartPayload)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, chartDataURL, bytes.NewReader(dataBytes))
+		if err != nil {
+			return fmt.Errorf("failed to create chart request for %s: %w", name, err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		if csrfToken != "" {
+			req.Header.Set("X-CSRFToken", csrfToken)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to query chart %s: %w", name, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("chart %s returned code %d: %s", name, resp.StatusCode, string(body))
+		}
+
+		var chartResult struct {
+			Result []struct {
+				Data   []map[string]any `json:"data"`
+				Status string           `json:"status"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&chartResult); err != nil {
+			return fmt.Errorf("failed to decode chart response for %s: %w", name, err)
+		}
+		if len(chartResult.Result) == 0 || len(chartResult.Result[0].Data) == 0 {
+			return fmt.Errorf("chart %s returned no data rows for run %s", name, runID)
+		}
+
+		if name == "approval_rate" {
+			row := chartResult.Result[0].Data[0]
+			for k, v := range row {
+				if strings.EqualFold(k, "approval_rate") {
+					if f, ok := v.(float64); ok {
+						chartApprovalRate = f
+						foundApprovalRate = true
+					}
+				}
+			}
+		}
+	}
+
+	if !foundApprovalRate {
+		return fmt.Errorf("approval_rate chart did not contain approval_rate value")
+	}
+
+	// 4. Verify approval-rate value equals approvals/finals from gateway counts within 1e-9
+	approvals, finals, err := fetchGatewayApprovalsAndFinals(ctx, gatewayURL, dbURL, runID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch gateway approvals/finals: %w", err)
+	}
+	if finals == 0 {
+		return fmt.Errorf("gateway reported 0 final decisions")
+	}
+	expectedRate := float64(approvals) / float64(finals)
+	if math.Abs(chartApprovalRate-expectedRate) > 1e-9 {
+		return fmt.Errorf("approval-rate mismatch: chart has %g, gateway has %d/%d = %g (diff: %g)",
+			chartApprovalRate, approvals, finals, expectedRate, math.Abs(chartApprovalRate-expectedRate))
+	}
+
+	return nil
+}
+
+func TestQueryDashboardChartsThroughSupersetUnit(t *testing.T) {
+	// 1. Success case
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/login") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "mock-token"})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/csrf_token") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": "mock-csrf"})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/dashboard/") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"slug": "payments-operations"}})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/chart/data") {
+			var req map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			queries, _ := req["queries"].([]any)
+			approvalRate := 0.85
+			data := []map[string]any{{"approval_rate": approvalRate, "count": 100}}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"result": []map[string]any{
+					{
+						"data":   data,
+						"status": "success",
+					},
+				},
+			})
+			_ = queries
+			return
+		}
+		if strings.Contains(r.URL.Path, "/counts") {
+			_ = json.NewEncoder(w).Encode(auth.RunCounts{RunID: "installed-42", Final: 100})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/metrics") {
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("swipeline_gateway_final_decisions_total{decision_source=\"FLINK\",decision=\"APPROVE\"} 85\n"))
+			return
+		}
+	}))
+	defer srv.Close()
+
+	if err := VerifyDashboardChartsThroughSuperset(context.Background(), srv.URL, "secret", srv.URL, "", "installed-42"); err != nil {
+		t.Fatalf("expected successful superset chart queries, got: %v", err)
+	}
+
+	// 2. Failure case: chart/data returns 500
+	failSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/login") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "mock-token"})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/dashboard/") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"slug": "payments-operations"}})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/chart/data") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	}))
+	defer failSrv.Close()
+
+	if err := VerifyDashboardChartsThroughSuperset(context.Background(), failSrv.URL, "secret", failSrv.URL, "", "installed-42"); err == nil {
+		t.Fatal("expected error on superset chart data 500 failure, got nil")
+	}
+
+	// 3. Failure case: approval rate mismatch > 1e-9
+	mismatchSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/login") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "mock-token"})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/dashboard/") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"slug": "payments-operations"}})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/chart/data") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"result": []map[string]any{
+					{
+						"data":   []map[string]any{{"approval_rate": 0.50}},
+						"status": "success",
+					},
+				},
+			})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/counts") {
+			_ = json.NewEncoder(w).Encode(auth.RunCounts{RunID: "installed-42", Final: 100})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/metrics") {
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("swipeline_gateway_final_decisions_total{decision_source=\"FLINK\",decision=\"APPROVE\"} 85\n"))
+			return
+		}
+	}))
+	defer mismatchSrv.Close()
+
+	if err := VerifyDashboardChartsThroughSuperset(context.Background(), mismatchSrv.URL, "secret", mismatchSrv.URL, "", "installed-42"); err == nil {
+		t.Fatal("expected error on approval rate mismatch, got nil")
+	}
+}
+
 func TestInstalledAnalytics(t *testing.T) {
 	druidURL := os.Getenv("SWIPELINE_DRUID")
 	if druidURL == "" {
@@ -262,6 +612,12 @@ func TestInstalledAnalytics(t *testing.T) {
 	if runID == "" {
 		runID = "installed-42"
 	}
+	supersetURL := os.Getenv("SWIPELINE_SUPERSET")
+	if supersetURL == "" {
+		supersetURL = "http://superset:8088"
+	}
+	supersetPassword := os.Getenv("SWIPELINE_SUPERSET_PASSWORD")
+	dbURL := os.Getenv("SWIPELINE_TEST_DB")
 
 	client := druid.NewClient(druidURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -270,6 +626,12 @@ func TestInstalledAnalytics(t *testing.T) {
 	t.Run("DruidDecisionFields", func(t *testing.T) {
 		if err := VerifyDruidDecisionFields(ctx, client, gatewayURL, runID); err != nil {
 			t.Fatalf("VerifyDruidDecisionFields failed: %v", err)
+		}
+	})
+
+	t.Run("DashboardChartsThroughSuperset", func(t *testing.T) {
+		if err := VerifyDashboardChartsThroughSuperset(ctx, supersetURL, supersetPassword, gatewayURL, dbURL, runID); err != nil {
+			t.Fatalf("VerifyDashboardChartsThroughSuperset failed: %v", err)
 		}
 	})
 }
