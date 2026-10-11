@@ -22,7 +22,8 @@ ready() {
  done
  return 1
 }
-docker compose -p "$project" up -d --build --wait
+docker compose -p "$project" build gateway replayer
+docker compose -p "$project" up -d --wait
 ready
 (
  while :; do
@@ -35,6 +36,7 @@ ready
    start-taskmanager) docker compose -p "$project" up -d --wait --wait-timeout 180 || rc=$? ;;
    kill-gateway) docker compose -p "$project" kill -s SIGKILL gateway || rc=$? ;;
    start-gateway) docker compose -p "$project" up -d --wait --wait-timeout 180 && ready || rc=$? ;;
+   restart-flink) docker compose -p "$project" restart flink-jobmanager flink-taskmanager && docker compose -p "$project" up -d --wait --wait-timeout 180 || rc=$? ;;
    *) rc=2 ;;
   esac
   printf '%s %s\n' "$id" "$rc" > "$work/result"
@@ -44,6 +46,9 @@ ready
 worker=$!
 docker run --rm --memory=768m --cpus=2 --network "${project}_default" --user "$(id -u):$(id -g)" \
  -e SWIPELINE_ENFORCE_BUDGETS="${SWIPELINE_ENFORCE_BUDGETS:-1}" -e GOMEMLIMIT=512MiB -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false \
- -e SWIPELINE_TEST_DB=postgres://gateway:gateway-local@postgres:5432/gateway?sslmode=disable -e SWIPELINE_TEST_GATEWAY=http://gateway:8081 -e SWIPELINE_KAFKA=kafka:9092 -e SWIPELINE_FAULT_DIR=/faults \
+ -e SWIPELINE_TEST_DB=postgres://gateway:gateway-local@postgres:5432/gateway?sslmode=disable -e SWIPELINE_TEST_GATEWAY=http://gateway:8081 -e SWIPELINE_KAFKA=kafka:9092 -e SWIPELINE_FLINK=http://flink-jobmanager:8081 -e SWIPELINE_FAULT_DIR=/faults \
  -v "$PWD:/src:ro,z" -v "$work:/faults:z" -w /src golang:1.27.2 \
- go test ./tests -run '^(TestInstalledAuthorization|TestLateProposalAfterStandIn|TestGatewayRestartRecovers)$' -count=1 -v
+ sh -ec '
+  go test ./tests -run '\''^(TestInstalledAuthorization|TestLateProposalAfterStandIn|TestGatewayRestartRecovers)$'\'' -count=1 -v
+  go test ./tests -run '\''^TestCanonical'\'' -count=1 -v
+ '

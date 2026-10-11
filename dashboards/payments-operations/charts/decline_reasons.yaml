@@ -1,0 +1,23 @@
+slice_name: Decline Reasons
+viz_type: echarts_timeseries_bar
+params:
+  adhoc_filters: []
+  datasource: e4b3c2a1-0000-4000-8000-000000000002__table
+  viz_type: echarts_timeseries_bar
+  query_mode: sql
+  sql: |
+    SELECT
+      "reason",
+      "decision_source",
+      COUNT(*) AS "decline_count"
+    FROM "swipeline_decisions"
+    WHERE "run_id" = :run_id
+      AND "decision" = 'DECLINE'
+    GROUP BY "reason", "decision_source"
+    ORDER BY "decline_count" DESC
+query_context: null
+cache_timeout: null
+uuid: e4b3c2a1-0000-4000-8000-000000000013
+version: 1.0.0
+dataset_uuid: e4b3c2a1-0000-4000-8000-000000000002
+description: Count of declined decisions grouped by primary decline reason and source

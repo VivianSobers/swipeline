@@ -104,7 +104,162 @@ Measured on 2026-10-10 on this laptop:
 
 These are observations from those runs. The stack has a 4 GiB steady memory budget. The acceptance container adds a 768 MiB limit. Keep one installed acceptance target running at a time.
 
+## Watch the network
+
+The full profile adds Druid, ZooKeeper, Superset and an idempotent bootstrap service to ingest canonical decisions and display them on an operational dashboard.
+
+### Capacity and preflight
+
+The full profile requires sufficient host memory before starting. Run the preflight check:
+
+```sh
+tests/preflight.sh full
+```
+
+The preflight script sums the memory limits of all rendered services plus a 1,536 MiB buffer and compares the total against `MemAvailable` in `/proc/meminfo`. If available memory is insufficient, it refuses startup and reports required versus available memory. The full profile is sized for the four-core reference server with 15 GiB of RAM; standard laptops and 2-core CI runners are not expected to fit.
+
+### Start the full profile
+
+```sh
+COMPOSE_PROFILES=full docker compose up -d --wait
+```
+
+The bootstrap container registers the Kafka ingestion supervisor with Druid and waits until ingestion state reaches `RUNNING`. Superset initializes its metadata database, creates an administrative user with a generated password stored in the named `superset-secrets` volume, and imports the payments operations dashboard.
+
+Print the generated Superset password:
+
+```sh
+make superset-password
+```
+
+Open Superset at `http://localhost:8088` (or the port set by `SWIPELINE_SUPERSET_PORT`) and log in with username `admin` and the printed password. Navigate to Dashboards and select `payments-operations`. The Druid router console is published at `http://localhost:8888` (or `SWIPELINE_DRUID_PORT`).
+
+### Dashboard panels and timing boundaries
+
+The Payments Operations dashboard provides real-time visibility into transaction outcomes:
+
+- **Throughput (TPS)**: Total final decisions bucketed by 10-second intervals (`TIME_FLOOR(__time, 'PT10S') / 10.0`). Visibility lags the transaction by up to one Flink checkpoint interval (10 s) plus processing.
+- **Approval Rate**: Proportion of approved final decisions over total final decisions, including stand-ins. If total decisions is zero, the panel reports null.
+- **Decline Reasons**: Distribution of decline counts grouped by decline reason and decision source (`FLINK` vs `STAND_IN`).
+- **Fraud Flags by MCC**: Transactions flagged for `CARD_TESTING`, `CARD_VELOCITY`, or `SPEND_ANOMALY` grouped by merchant category code (`mcc`). Because multiple flags may apply to a single transaction, flag counts can overlap.
+- **Decision Latency**: Latency histogram buckets (0-5, 5-10, 10-20, 20-35, 35-50, 50+ ms) with mean and maximum. This panel measures the duration from admission to final decision choice, excluding the database commit; Prometheus remains the authority for the 50 ms and 100 ms response targets.
+- **Freshness and Integrity**: Tracks `MAX(__time)`, ingestion lag in seconds (`EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) - EXTRACT(EPOCH FROM MAX(__time))`), total ingested row count, and the stand-in share.
+
+### Reconcile decisions
+
+To verify that every gateway final decision reached Druid without duplication or loss, run the reconciliation command:
+
+```sh
+docker compose exec replayer /swipeline reconcile --run-id demo-42 --gateway http://gateway:8081 --druid http://druid-router:8888 --wait 2m
+```
+
+The tool compares the gateway's final decision count from PostgreSQL against Druid's total row count and distinct transaction count. It polls until the gateway has zero pending decisions and Druid row count equals both distinct transactions and gateway finals. If row count exceeds distinct transactions, it reports duplicate rows and exits non-zero.
+
+### Measured results
+
+Full acceptance runs via `make m3-demo` on the four-core reference server:
+
+| Metric | Result |
+| --- | --- |
+| Completed decisions | (to be recorded after server run) |
+| Approvals | (to be recorded after server run) |
+| Declines | (to be recorded after server run) |
+| Stand-in share | (to be recorded after server run) |
+| Ingestion freshness lag | (to be recorded after server run) |
+| Reconciliation status | (to be recorded after server run) |
+
+### Analytics limits
+
+Operational limits for network analytics:
+
+- Canonical decision visibility lags transactions by up to one checkpoint interval (10 s) plus processing.
+- Druid exactly-once relies on intact supervisor offsets in Kafka and metadata storage.
+- Never reset offsets on a populated datasource (rebuild into a fresh datasource instead). You must never reset offsets on an active datasource.
+- The full profile does not fit the 14 GB laptop or standard two-core CI runners; run full acceptance on the four-core reference server.
+
+## Follow a Transaction's Lifecycle
+
+Swipeline tracks transactions through their entire lifecycle — from real-time authorization through clearing, reversals, disputes, and lakehouse financial settlement.
+
+### Architecture and Lifecycle Flows
+
+The lifecycle subsystem pairs an event-driven ledger journal with an ACID lakehouse powered by Apache Spark 4.1.3, Apache Hudi 1.1.0, and SeaweedFS (S3-compatible object storage).
+
+Four canonical transaction lifecycle flows are supported:
+1. **Clearing (`CLEARED`)**: An approved transaction receives a `CLEAR` event. The batch reducer creates a clearing settlement posting with an exact 150 bps (1.50%) interchange fee.
+2. **Pre-clearing Reversal (`REVERSED`)**: An authorization is cancelled by a `REVERSAL` event before clearing occurs. Status transitions to `REVERSED` with 0 settlement postings generated.
+3. **Post-clearing Reversal (`REVERSED`)**: A reversal arrives after clearing. Status transitions to `REVERSED` and generates a cancelling settlement posting that exactly mirrors and offsets the original principal and 150 bps fee.
+4. **Chargeback (`CHARGED_BACK`)**: Supports out-of-order event arrival. A `CHARGEBACK` event arriving before clearing is journaled unapplied; once the matching `CLEAR` event arrives, the reducer reconciles state to `CHARGED_BACK` with both clearing and chargeback postings present. Attempts to clear an already reversed transaction are rejected and quarantined.
+
+### Storage Topology
+
+Hudi Copy-on-Write (COW) tables reside in SeaweedFS under `s3a://swipeline/lakehouse/`:
+- `table_transactions`: Snapshot of transaction state, current status (`CLEARED`, `REVERSED`, `CHARGED_BACK`), balance amounts, and state hashes.
+- `table_ledger_events`: Append-only chronological audit log of all transition events ordered by `logical_seq`.
+- `table_settlement_postings`: Double-entry accounting postings with exact signed principal and interchange amounts.
+- `table_quarantine`: Quarantined events that violate state machine invariants.
+
+### Lifecycle Inspection CLI
+
+The `swipeline inspect` command queries Hudi snapshot tables and formats the complete lifecycle history as JSON:
+
+```sh
+swipeline inspect --transaction-id tx_20261008_000042 --spark http://spark-batch:8080
+```
+
+Example output:
+```json
+{
+  "transaction_id": "tx_20261008_000042",
+  "status": "CLEARED",
+  "amounts": {
+    "authorized_amount": 5400,
+    "cleared_amount": 5400,
+    "reversed_amount": 0,
+    "charged_back_amount": 0,
+    "currency": "USD"
+  },
+  "state_hash": "a1b2c3d4e5f67890",
+  "state_version": 2,
+  "events": [
+    {
+      "event_id": "evt_auth_42",
+      "logical_seq": 1,
+      "event_type": "AUTHORIZATION",
+      "event_time_ms": 1728345600000,
+      "payload_hash": "hash_auth_42"
+    },
+    {
+      "event_id": "evt_clear_42",
+      "logical_seq": 2,
+      "event_type": "CLEAR",
+      "event_time_ms": 1728345660000,
+      "payload_hash": "hash_clear_42"
+    }
+  ],
+  "postings": [
+    {
+      "posting_id": "post_clear_42",
+      "event_id": "evt_clear_42",
+      "posting_date": "2026-10-08",
+      "signed_principal": 5400,
+      "signed_interchange": 81,
+      "fee_schedule_version": "v1",
+      "adjustment_reason": null,
+      "batch_id": "batch_20261008_01"
+    }
+  ]
+}
+```
+
+### Capacity and Execution
+
+- **Local Storage Bringup**: `make m4-storage` brings up PostgreSQL, Kafka, and SeaweedFS, and creates topics.
+- **End-to-End Acceptance**: `make m4-demo` runs the core preflight check, executes replay with lifecycle scheduling, triggers batch ingestion, and validates lifecycle assertions.
+- **Preflight Memory Requirements**: Core profile stack requires at least 8.25 GiB of available memory verified via `tests/preflight.sh core`. Full multi-container acceptance should be run on the four-core reference server.
+
 ## Develop and check
+
 
 ```sh
 make fmt           # format Go code

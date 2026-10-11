@@ -1,0 +1,21 @@
+slice_name: Throughput (TPS)
+viz_type: echarts_timeseries_line
+params:
+  adhoc_filters: []
+  datasource: e4b3c2a1-0000-4000-8000-000000000002__table
+  viz_type: echarts_timeseries_line
+  query_mode: sql
+  sql: |
+    SELECT
+      TIME_FLOOR(__time, 'PT10S') AS "time_bucket",
+      COUNT(*) / 10.0 AS "tps"
+    FROM "swipeline_decisions"
+    WHERE "run_id" = :run_id
+    GROUP BY 1
+    ORDER BY 1
+query_context: null
+cache_timeout: null
+uuid: e4b3c2a1-0000-4000-8000-000000000011
+version: 1.0.0
+dataset_uuid: e4b3c2a1-0000-4000-8000-000000000002
+description: Throughput in transactions per second (10s buckets)

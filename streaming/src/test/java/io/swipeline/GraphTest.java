@@ -107,4 +107,11 @@ public class GraphTest {
   assertEquals(Canonicalizer.DLQ,dlq.getInEdges().get(0).getOutputTag());
   assertEquals(org.apache.flink.connector.base.DeliveryGuarantee.AT_LEAST_ONCE,field(field(dlq.getOperatorFactory(),"sink"),"deliveryGuarantee"));
  }
+
+ @Test public void canonicalEnvironmentDefaultsAndOverrides() throws Exception {
+  assertEquals(1,node(Authorization.environment(java.util.Map.of()).getStreamGraph(),"canonical-v1").getParallelism());
+  var graph=Authorization.environment(java.util.Map.of("CANON_PARALLELISM","4","AUTH_PARALLELISM","2")).getStreamGraph();
+  for(String uid:new String[]{"canonical-source-v1","canonical-v1","canonical-sink-v1","canonical-dlq-v1"})assertEquals(4,node(graph,uid).getParallelism());
+  assertEquals(2,node(graph,"card-v1").getParallelism());
+ }
 }
