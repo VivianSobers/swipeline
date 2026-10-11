@@ -634,4 +634,97 @@ func TestInstalledAnalytics(t *testing.T) {
 			t.Fatalf("VerifyDashboardChartsThroughSuperset failed: %v", err)
 		}
 	})
+
+	t.Run("FreshnessAfterReplay", func(t *testing.T) {
+		lag, err := VerifyFreshnessAfterReplay(ctx, client, runID, 30.0, 60*time.Second)
+		if err != nil {
+			t.Fatalf("VerifyFreshnessAfterReplay failed: %v", err)
+		}
+		t.Logf("freshness lag=%.3fs (budget=30s)", lag)
+	})
+}
+
+// VerifyFreshnessAfterReplay checks the acceptance criteria for Unit 11.4:
+// - The freshness query's lag is below 30 s within 60 s after the replay finishes
+func VerifyFreshnessAfterReplay(ctx context.Context, druidClient *druid.Client, runID string, budgetLagSeconds float64, waitDuration time.Duration) (float64, error) {
+	deadline := time.Now().Add(waitDuration)
+	query := `SELECT
+  MAX(__time) AS "max_time",
+  (EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) - EXTRACT(EPOCH FROM MAX(__time))) AS "ingestion_lag_seconds",
+  COUNT(*) AS "total_count",
+  CASE
+    WHEN COUNT(*) = 0 THEN 0.0
+    ELSE CAST(SUM(CASE WHEN "decision_source" = 'STAND_IN' THEN 1 ELSE 0 END) AS DOUBLE) / COUNT(*)
+  END AS "standin_share"
+FROM "swipeline_decisions"
+WHERE "run_id" = ?`
+
+	var lastLag float64 = -1
+	for {
+		select {
+		case <-ctx.Done():
+			return lastLag, ctx.Err()
+		default:
+		}
+
+		rows, err := druidClient.SQL(ctx, query, runID)
+		if err == nil && len(rows) > 0 {
+			row := rows[0]
+			for k, v := range row {
+				if strings.EqualFold(k, "ingestion_lag_seconds") {
+					switch val := v.(type) {
+					case float64:
+						lastLag = val
+					case int64:
+						lastLag = float64(val)
+					case int:
+						lastLag = float64(val)
+					}
+				}
+			}
+			if lastLag >= 0 && lastLag < budgetLagSeconds {
+				return lastLag, nil
+			}
+		}
+
+		if time.Now().After(deadline) {
+			if lastLag < 0 {
+				return lastLag, fmt.Errorf("freshness query returned no valid lag within %v", waitDuration)
+			}
+			return lastLag, fmt.Errorf("freshness lag %.3fs exceeded budget of %.3fs within %v", lastLag, budgetLagSeconds, waitDuration)
+		}
+
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestVerifyFreshnessAfterReplayUnit(t *testing.T) {
+	// 1. Success case: lag is within budget
+	srvOK := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"ingestion_lag_seconds": 12.5}})
+	}))
+	defer srvOK.Close()
+
+	clientOK := druid.NewClient(srvOK.URL)
+	lag, err := VerifyFreshnessAfterReplay(context.Background(), clientOK, "installed-42", 30.0, 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected successful freshness check, got: %v", err)
+	}
+	if lag != 12.5 {
+		t.Fatalf("expected lag 12.5, got %f", lag)
+	}
+
+	// 2. Failure case: lag exceeds budget
+	srvFail := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"ingestion_lag_seconds": 45.0}})
+	}))
+	defer srvFail.Close()
+
+	clientFail := druid.NewClient(srvFail.URL)
+	_, err = VerifyFreshnessAfterReplay(context.Background(), clientFail, "installed-42", 30.0, 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected error when freshness lag exceeds budget, got nil")
+	}
 }
