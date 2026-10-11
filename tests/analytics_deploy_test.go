@@ -395,3 +395,30 @@ func TestCIWorkflowFullProfile(t *testing.T) {
 		}
 	}
 }
+
+func TestReadmeWatchTheNetwork(t *testing.T) {
+	path := "README.md"
+	if _, err := os.Stat(path); err != nil {
+		path = "../README.md"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	for _, want := range []string{
+		"## Watch the network",
+		"preflight",
+		"COMPOSE_PROFILES=full",
+		"make superset-password",
+		"http://localhost:8088",
+		"payments-operations",
+		"swipeline reconcile",
+		"the four-core reference server",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("README.md missing %q", want)
+		}
+	}
+}

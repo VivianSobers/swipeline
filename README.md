@@ -104,6 +104,70 @@ Measured on 2026-10-10 on this laptop:
 
 These are observations from those runs. The stack has a 4 GiB steady memory budget. The acceptance container adds a 768 MiB limit. Keep one installed acceptance target running at a time.
 
+## Watch the network
+
+The full profile adds Druid, ZooKeeper, Superset and an idempotent bootstrap service to ingest canonical decisions and display them on an operational dashboard.
+
+### Capacity and preflight
+
+The full profile requires sufficient host memory before starting. Run the preflight check:
+
+```sh
+tests/preflight.sh full
+```
+
+The preflight script sums the memory limits of all rendered services plus a 1,536 MiB buffer and compares the total against `MemAvailable` in `/proc/meminfo`. If available memory is insufficient, it refuses startup and reports required versus available memory. The full profile is sized for the four-core reference server with 15 GiB of RAM; standard laptops and 2-core CI runners are not expected to fit.
+
+### Start the full profile
+
+```sh
+COMPOSE_PROFILES=full docker compose up -d --wait
+```
+
+The bootstrap container registers the Kafka ingestion supervisor with Druid and waits until ingestion state reaches `RUNNING`. Superset initializes its metadata database, creates an administrative user with a generated password stored in the named `superset-secrets` volume, and imports the payments operations dashboard.
+
+Print the generated Superset password:
+
+```sh
+make superset-password
+```
+
+Open Superset at `http://localhost:8088` (or the port set by `SWIPELINE_SUPERSET_PORT`) and log in with username `admin` and the printed password. Navigate to Dashboards and select `payments-operations`. The Druid router console is published at `http://localhost:8888` (or `SWIPELINE_DRUID_PORT`).
+
+### Dashboard panels and timing boundaries
+
+The Payments Operations dashboard provides real-time visibility into transaction outcomes:
+
+- **Throughput (TPS)**: Total final decisions bucketed by 10-second intervals (`TIME_FLOOR(__time, 'PT10S') / 10.0`). Visibility lags the transaction by up to one Flink checkpoint interval (10 s) plus processing.
+- **Approval Rate**: Proportion of approved final decisions over total final decisions, including stand-ins. If total decisions is zero, the panel reports null.
+- **Decline Reasons**: Distribution of decline counts grouped by decline reason and decision source (`FLINK` vs `STAND_IN`).
+- **Fraud Flags by MCC**: Transactions flagged for `CARD_TESTING`, `CARD_VELOCITY`, or `SPEND_ANOMALY` grouped by merchant category code (`mcc`). Because multiple flags may apply to a single transaction, flag counts can overlap.
+- **Decision Latency**: Latency histogram buckets (0-5, 5-10, 10-20, 20-35, 35-50, 50+ ms) with mean and maximum. This panel measures the duration from admission to final decision choice, excluding the database commit; Prometheus remains the authority for the 50 ms and 100 ms response targets.
+- **Freshness and Integrity**: Tracks `MAX(__time)`, ingestion lag in seconds (`EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) - EXTRACT(EPOCH FROM MAX(__time))`), total ingested row count, and the stand-in share.
+
+### Reconcile decisions
+
+To verify that every gateway final decision reached Druid without duplication or loss, run the reconciliation command:
+
+```sh
+docker compose exec replayer /swipeline reconcile --run-id demo-42 --gateway http://gateway:8081 --druid http://druid-router:8888 --wait 2m
+```
+
+The tool compares the gateway's final decision count from PostgreSQL against Druid's total row count and distinct transaction count. It polls until the gateway has zero pending decisions and Druid row count equals both distinct transactions and gateway finals. If row count exceeds distinct transactions, it reports duplicate rows and exits non-zero.
+
+### Measured results
+
+Full acceptance runs via `make m3-demo` on the four-core reference server:
+
+| Metric | Result |
+| --- | --- |
+| Completed decisions | (to be recorded after server run) |
+| Approvals | (to be recorded after server run) |
+| Declines | (to be recorded after server run) |
+| Stand-in share | (to be recorded after server run) |
+| Ingestion freshness lag | (to be recorded after server run) |
+| Reconciliation status | (to be recorded after server run) |
+
 ## Develop and check
 
 ```sh
