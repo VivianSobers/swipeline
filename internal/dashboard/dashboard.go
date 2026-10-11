@@ -186,7 +186,7 @@ func BuildBundleZip(srcDir, zipPath string) error {
 		if err != nil {
 			return err
 		}
-		f, err := w.Create(rel)
+		f, err := w.Create(filepath.ToSlash(filepath.Join(filepath.Base(filepath.Clean(srcDir)), rel)))
 		if err != nil {
 			return err
 		}

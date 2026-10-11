@@ -389,7 +389,7 @@ func TestDashboardBundleZip(t *testing.T) {
 
 	foundMeta := false
 	for _, f := range reader.File {
-		if f.Name == "metadata.yaml" || f.Name == "payments-operations/metadata.yaml" {
+		if f.Name == "payments-operations/metadata.yaml" {
 			foundMeta = true
 			break
 		}
@@ -411,5 +411,15 @@ func TestSupersetDockerfileCopiesBundle(t *testing.T) {
 	content := string(data)
 	if !strings.Contains(content, "COPY dashboards/payments-operations.zip /app/dashboards/payments-operations.zip") {
 		t.Errorf("superset.Dockerfile does not copy payments-operations.zip")
+	}
+}
+
+func TestDashboardImporterMetadataType(t *testing.T) {
+	data, err := os.ReadFile("../dashboards/payments-operations/metadata.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "type: Dashboard") {
+		t.Fatal("import-dashboards requires Dashboard metadata type")
 	}
 }

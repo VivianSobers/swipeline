@@ -1,7 +1,11 @@
 package dashboard
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -77,6 +81,46 @@ func TestChartMetadataIsQuotedForYAML(t *testing.T) {
 		value, _, _ := strings.Cut(tail, "\n")
 		if err := json.Unmarshal([]byte(value), &decoded); err != nil || decoded != want {
 			t.Fatalf("%s is not a safely quoted YAML scalar: %q (%v)", key, value, err)
+		}
+	}
+}
+
+func TestBundlePreservesImporterRoot(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "payments-operations")
+	if err := os.MkdirAll(filepath.Join(source, "charts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"metadata.yaml": "version: 1.0.0\ntype: Dashboard\n", "charts/a.yaml": "slice_name: test\n"} {
+		if err := os.WriteFile(filepath.Join(source, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output := filepath.Join(t.TempDir(), "bundle.zip")
+	if err := BuildBundleZip(source, output); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := BuildBundleZip(source, output); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("bundle changed on repeat build")
+	}
+	archive, err := zip.OpenReader(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	for _, entry := range archive.File {
+		if !strings.HasPrefix(entry.Name, "payments-operations/") {
+			t.Fatalf("Superset strips first path component; missing common root: %s", entry.Name)
 		}
 	}
 }
