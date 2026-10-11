@@ -8,7 +8,7 @@ import (
 func goldenFixture() Event {
 	return Event{
 		SchemaVersion:     1,
-		EventID:           "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		EventID:           "14892d9c31db03017e88310b9953e9ff2c3a480eac0c397553bd3024cd20caa3",
 		RunID:             "golden-run",
 		TransactionID:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		SourceSeq:         100,
@@ -49,7 +49,7 @@ func TestKeyReorderStability(t *testing.T) {
 	// JSON with keys reversed/scrambled
 	scrambledJSON := []byte(`{
 		"payload_hash": "bc7caa2fcc9a66940ad3e5f5d9d4c11388a8413c76048008857a215eacccf0fe",
-		"event_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"event_id": "14892d9c31db03017e88310b9953e9ff2c3a480eac0c397553bd3024cd20caa3",
 		"close_day": "2026-10-11",
 		"seal_epoch": 1,
 		"reference_version": "synthetic-reference-v1",

@@ -3,7 +3,9 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -506,11 +508,32 @@ func TestLifecycleHTTP(t *testing.T) {
 
 	// 3. Unknown transaction ID -> 404
 	unknown := lcEvt
-	unknown.TransactionID = "unknown-tx"
+	unknown.TransactionID = contract.ID("unknown-tx")
 	unknown.EventID = contract.ID(unknown.TransactionID, unknown.Kind, "2")
+	unknown.PayloadHash = fmt.Sprintf("%x", sha256.Sum256(lifecycle.Canonical(unknown)))
 	w = invoke(s, http.MethodPost, "/v1/lifecycle", unknown, unknown.EventID)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for unknown transaction, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Invalid content must not create receipts or lifecycle outbox rows.
+	invalid := lcEvt
+	invalid.AmountMinor++
+	w = invoke(s, http.MethodPost, "/v1/lifecycle", invalid, invalid.EventID)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected stale-hash rejection: %d %s", w.Code, w.Body.String())
+	}
+	for _, query := range []string{
+		"SELECT count(*) FROM lifecycle_receipts WHERE event_id=$1",
+		"SELECT count(*) FROM outbox WHERE event_id=$1",
+	} {
+		var count int
+		if err := s.DB.DB.QueryRowContext(ctx, query, lcEvt.EventID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("invalid lifecycle persisted %d rows", count)
+		}
 	}
 
 	// 4. Valid submission -> 202
@@ -523,11 +546,45 @@ func TestLifecycleHTTP(t *testing.T) {
 		t.Fatalf("invalid receipt response: %s", w.Body.String())
 	}
 
-	// 5. Conflict submission (same event ID, altered payload hash) -> 409
+	// 5. Conflict submission (same event ID, canonical changed payload) -> 409
 	conflicting := lcEvt
-	conflicting.PayloadHash = "0000000000000000000000000000000000000000000000000000000000000000"
+	conflicting.EventTimeMS++
+	conflicting.PayloadHash = fmt.Sprintf("%x", sha256.Sum256(lifecycle.Canonical(conflicting)))
 	w = invoke(s, http.MethodPost, "/v1/lifecycle", conflicting, conflicting.EventID)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409 Conflict, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestLifecycleIntegrityBeforeStorage(t *testing.T) {
+	data, err := os.ReadFile("../../schemas/fixtures/lifecycle_clear.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := lifecycle.Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Service{}
+	for name, mutate := range map[string]func(*lifecycle.Event){
+		"stale hash":   func(e *lifecycle.Event) { e.AmountMinor++ },
+		"altered ID":   func(e *lifecycle.Event) { e.EventID = contract.ID("other") },
+		"empty ID":     func(e *lifecycle.Event) { e.EventID = "" },
+		"altered hash": func(e *lifecycle.Event) { e.PayloadHash = contract.ID("other") },
+		"empty hash":   func(e *lifecycle.Event) { e.PayloadHash = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := e
+			mutate(&bad)
+			w := invoke(s, http.MethodPost, "/v1/lifecycle", bad, bad.EventID)
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "INVALID_REQUEST") {
+				t.Fatalf("expected rejection before nil storage: %d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+	e.ProducedAtMS++
+	w := invoke(s, http.MethodPost, "/v1/lifecycle", e, e.EventID)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("transport change must reach storage: %d %s", w.Code, w.Body.String())
 	}
 }

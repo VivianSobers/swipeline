@@ -164,11 +164,11 @@ func (e Event) Validate() error {
 	if !hashPattern.MatchString(e.TransactionID) || !hashPattern.MatchString(e.ParentEventID) {
 		return errors.New("invalid transaction or parent event id")
 	}
-	if e.EventID != "" && !hashPattern.MatchString(e.EventID) {
-		return errors.New("invalid event id format")
+	if e.EventID != contract.ID(e.TransactionID, e.Kind, strconv.Itoa(e.LifecycleSeq)) {
+		return errors.New("invalid event id")
 	}
-	if e.PayloadHash != "" && !hashPattern.MatchString(e.PayloadHash) {
-		return errors.New("invalid payload hash format")
+	if e.PayloadHash != digest(Canonical(e)) {
+		return errors.New("invalid payload hash")
 	}
 	if _, err := time.Parse("2006-01-02", e.AuthorizationDate); err != nil {
 		return errors.New("invalid authorization date")

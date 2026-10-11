@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -128,9 +130,18 @@ func TestReceiveLifecycleDatabase(t *testing.T) {
 		t.Fatalf("duplicate receipt mismatch: got %+v, want %+v", againReceipt, receipt)
 	}
 
-	// 3. Conflict rejection (same event_id, different payload hash)
+	// Transport timestamp changes retain the original admission receipt.
+	retransported := lcEvt
+	retransported.ProducedAtMS++
+	transportReceipt, err := s.ReceiveLifecycle(ctx, retransported)
+	if err != nil || transportReceipt != receipt {
+		t.Fatalf("transport retry: %+v, %v", transportReceipt, err)
+	}
+
+	// 3. Conflict rejection (same event_id, different canonical payload hash)
 	conflicting := lcEvt
-	conflicting.PayloadHash = "0000000000000000000000000000000000000000000000000000000000000000"
+	conflicting.EventTimeMS++
+	conflicting.PayloadHash = fmt.Sprintf("%x", sha256.Sum256(lifecycle.Canonical(conflicting)))
 	_, err = s.ReceiveLifecycle(ctx, conflicting)
 	if !errors.Is(err, ErrLifecycleConflict) {
 		t.Fatalf("expected ErrLifecycleConflict, got: %v", err)
@@ -138,9 +149,9 @@ func TestReceiveLifecycleDatabase(t *testing.T) {
 
 	// 4. Unknown transaction rejection
 	unknownEvt := lcEvt
-	unknownEvt.TransactionID = "unknown-tx-999"
+	unknownEvt.TransactionID = contract.ID("unknown-tx-999")
 	unknownEvt.EventID = contract.ID(unknownEvt.TransactionID, unknownEvt.Kind, "2")
-	unknownEvt.PayloadHash = lcEvt.PayloadHash
+	unknownEvt.PayloadHash = fmt.Sprintf("%x", sha256.Sum256(lifecycle.Canonical(unknownEvt)))
 	_, err = s.ReceiveLifecycle(ctx, unknownEvt)
 	if !errors.Is(err, ErrUnknownTransaction) {
 		t.Fatalf("expected ErrUnknownTransaction, got: %v", err)

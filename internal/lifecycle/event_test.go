@@ -2,7 +2,9 @@ package lifecycle
 
 import (
 	"encoding/json"
+	"github.com/VivianSobers/swipeline/internal/contract"
 	"os"
+	"strconv"
 	"testing"
 )
 
@@ -243,5 +245,41 @@ func TestNewLifecycleEvent(t *testing.T) {
 	)
 	if err == nil {
 		t.Error("expected error for negative amount")
+	}
+}
+
+func TestEventIntegrity(t *testing.T) {
+	var e Event
+	if err := json.Unmarshal(validClearJSON(t), &e); err != nil {
+		t.Fatal(err)
+	}
+	e.EventID = contract.ID(e.TransactionID, e.Kind, strconv.Itoa(e.LifecycleSeq))
+	e.PayloadHash = digest(Canonical(e))
+	for name, mutate := range map[string]func(*Event){
+		"business content": func(e *Event) { e.AmountMinor++ },
+		"altered ID":       func(e *Event) { e.EventID = contract.ID("other") },
+		"empty ID":         func(e *Event) { e.EventID = "" },
+		"altered hash":     func(e *Event) { e.PayloadHash = contract.ID("other") },
+		"empty hash":       func(e *Event) { e.PayloadHash = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := e
+			mutate(&bad)
+			if bad.Validate() == nil {
+				t.Fatal("Validate accepted altered event")
+			}
+			data, _ := json.Marshal(bad)
+			if _, err := Decode(data); err == nil {
+				t.Fatal("Decode accepted altered event")
+			}
+		})
+	}
+	e.ProducedAtMS++
+	if err := e.Validate(); err != nil {
+		t.Fatalf("transport timestamp: %v", err)
+	}
+	data, _ := json.Marshal(e)
+	if _, err := Decode(data); err != nil {
+		t.Fatalf("transport decode: %v", err)
 	}
 }
