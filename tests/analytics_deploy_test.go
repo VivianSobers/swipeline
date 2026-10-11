@@ -113,7 +113,6 @@ func TestRenderedAnalyticsProfileTopology(t *testing.T) {
 
 	expectedMissing := map[string]bool{
 		"druid-router":        true,
-		"druid-historical":    true,
 		"druid-middlemanager": true,
 	}
 
