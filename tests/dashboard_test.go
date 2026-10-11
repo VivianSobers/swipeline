@@ -150,3 +150,48 @@ func TestDashboardQueries(t *testing.T) {
 	}
 	_ = identRe
 }
+
+func TestDruidDatabaseAndDataset(t *testing.T) {
+	dbPath := "dashboards/payments-operations/databases/druid.yaml"
+	if _, err := os.Stat(dbPath); err != nil {
+		dbPath = "../dashboards/payments-operations/databases/druid.yaml"
+	}
+	dbData, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", dbPath, err)
+	}
+	dbContent := string(dbData)
+
+	if !strings.Contains(dbContent, "sqlalchemy_uri: druid://druid-broker:8082/druid/v2/sql/") {
+		t.Errorf("db missing or incorrect sqlalchemy_uri")
+	}
+	if !strings.Contains(dbContent, "expose_in_sqllab: true") {
+		t.Errorf("db missing expose_in_sqllab: true")
+	}
+	if !strings.Contains(dbContent, "allow_dml: false") {
+		t.Errorf("db missing allow_dml: false")
+	}
+
+	dsPath := "dashboards/payments-operations/datasets/druid/swipeline_decisions.yaml"
+	if _, err := os.Stat(dsPath); err != nil {
+		dsPath = "../dashboards/payments-operations/datasets/druid/swipeline_decisions.yaml"
+	}
+	dsData, err := os.ReadFile(dsPath)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", dsPath, err)
+	}
+	dsContent := string(dsData)
+
+	if !strings.Contains(dsContent, "table_name: swipeline_decisions") {
+		t.Errorf("dataset missing table_name: swipeline_decisions")
+	}
+	if strings.Contains(strings.ToLower(dsContent), "card_token") {
+		t.Errorf("dataset contains prohibited card_token column")
+	}
+
+	for col, _ := range allowedColumns {
+		if !strings.Contains(dsContent, "column_name: "+col) {
+			t.Errorf("dataset missing column %s", col)
+		}
+	}
+}
