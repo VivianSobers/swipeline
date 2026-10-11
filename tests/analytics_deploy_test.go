@@ -262,3 +262,55 @@ func TestCanonicalSupervisorSpec(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderedAnalyticsBootstrap(t *testing.T) {
+	profile := os.Getenv("COMPOSE_PROFILES")
+	if profile != "full" {
+		services := rendered(t)
+		if _, ok := services["analytics-bootstrap"]; ok {
+			t.Fatal("analytics-bootstrap rendered in default profile")
+		}
+		return
+	}
+
+	services := renderedFull(t)
+	s, ok := services["analytics-bootstrap"]
+	if !ok {
+		t.Fatal("missing analytics-bootstrap in full profile")
+	}
+
+	if s.Image != "swipeline-replayer:m1" {
+		t.Fatalf("analytics-bootstrap pin changed: %s", s.Image)
+	}
+	if s.MemLimit != 128<<20 {
+		t.Fatalf("analytics-bootstrap memory limit: got %d, want %d", s.MemLimit, 128<<20)
+	}
+	if len(s.Profiles) != 1 || s.Profiles[0] != "full" {
+		t.Fatalf("analytics-bootstrap profile regression: %v", s.Profiles)
+	}
+
+	for dep, want := range map[string]string{
+		"druid-router":               "service_healthy",
+		"druid-coordinator-overlord": "service_healthy",
+		"kafka":                      "service_healthy",
+	} {
+		cond, ok := s.DependsOn[dep]
+		if !ok || cond.Condition != want {
+			t.Fatalf("analytics-bootstrap missing dependency %s with condition %s: %+v", dep, want, cond)
+		}
+	}
+
+	mounted := false
+	for _, v := range s.Volumes {
+		if v.Target == "/etc/swipeline/supervisor.json" && strings.HasSuffix(v.Source, "/deploy/druid/supervisor.json") {
+			mounted = true
+			if !v.ReadOnly || v.Bind.SELinux != "z" {
+				t.Fatalf("supervisor.json mount must be read-only with selinux z: %+v", v)
+			}
+			break
+		}
+	}
+	if !mounted {
+		t.Fatal("analytics-bootstrap does not mount /etc/swipeline/supervisor.json")
+	}
+}

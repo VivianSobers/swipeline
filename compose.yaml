@@ -400,6 +400,39 @@ services:
       options:
         max-size: 5m
         max-file: "2"
+  analytics-bootstrap:
+    profiles: [full]
+    image: swipeline-replayer:m1
+    restart: "no"
+    mem_limit: 128m
+    command:
+      - bootstrap
+      - --druid
+      - http://druid-router:8888
+      - --spec
+      - /etc/swipeline/supervisor.json
+      - --wait
+      - 5m
+    volumes:
+      - type: bind
+        source: ./deploy/druid/supervisor.json
+        target: /etc/swipeline/supervisor.json
+        read_only: true
+        bind:
+          selinux: z
+    depends_on:
+      druid-router:
+        condition: service_healthy
+      druid-coordinator-overlord:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
 volumes:
   preview-data:
   prometheus-data:
