@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -187,5 +188,59 @@ func TestAuthorizationReplayCLI(t *testing.T) {
 	}
 	if !bytes.Contains(out.Bytes(), []byte(`"completed":3`)) || manifest.Mode != "throughput" || manifest.Concurrency != 4 {
 		t.Fatal(out.String(), manifest)
+	}
+}
+
+func TestBootstrapCommand(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "supervisor.json")
+	specContent := `{
+  "type": "kafka",
+  "spec": {
+    "dataSchema": {
+      "dataSource": "swipeline_decisions",
+      "timestampSpec": {"column": "finalized_at_ms", "format": "millis"},
+      "dimensionsSpec": {"dimensions": ["run_id"]}
+    },
+    "ioConfig": {"type": "kafka", "topic": "swipeline.decisions.v1"}
+  }
+}`
+	if err := os.WriteFile(specPath, []byte(specContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	state := "STARTING"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/druid/indexer/v1/supervisor/swipeline_decisions":
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		case r.Method == http.MethodPost && r.URL.Path == "/druid/indexer/v1/supervisor":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"swipeline_decisions"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/druid/indexer/v1/supervisor/swipeline_decisions/status":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"payload": map[string]any{"state": state},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var out, errs bytes.Buffer
+	err := run(context.Background(), []string{"bootstrap", "--druid", server.URL, "--spec", specPath, "--wait", "100ms"}, &out, &errs)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "STARTING") {
+		t.Fatalf("expected error to contain state 'STARTING', got: %v", err)
+	}
+
+	state = "RUNNING"
+	out.Reset()
+	errs.Reset()
+	err = run(context.Background(), []string{"bootstrap", "--druid", server.URL, "--spec", specPath, "--wait", "2s"}, &out, &errs)
+	if err != nil {
+		t.Fatalf("unexpected bootstrap error: %v", err)
 	}
 }

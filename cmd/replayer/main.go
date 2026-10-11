@@ -20,6 +20,7 @@ import (
 
 	"github.com/VivianSobers/swipeline/internal/authorize"
 	"github.com/VivianSobers/swipeline/internal/contract"
+	"github.com/VivianSobers/swipeline/internal/druid"
 	"github.com/VivianSobers/swipeline/internal/generator"
 	"github.com/VivianSobers/swipeline/internal/preview"
 	"github.com/VivianSobers/swipeline/internal/replay"
@@ -70,7 +71,7 @@ func call(ctx context.Context, method, path string, body any, out io.Writer) err
 
 func run(ctx context.Context, args []string, out, errs io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: swipeline serve|replay|status|health")
+		return errors.New("usage: swipeline serve|replay|status|health|bootstrap")
 	}
 	switch args[0] {
 	case "serve":
@@ -189,6 +190,73 @@ func run(ctx context.Context, args []string, out, errs io.Writer) error {
 			path = "/healthz"
 		}
 		return call(short, "GET", path, nil, out)
+	case "bootstrap":
+		flags := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
+		flags.SetOutput(errs)
+		druidURL := flags.String("druid", "http://druid-router:8888", "Druid router URL")
+		specPath := flags.String("spec", "/etc/swipeline/supervisor.json", "path to supervisor spec file")
+		waitDuration := flags.Duration("wait", 5*time.Minute, "maximum wait duration for supervisor RUNNING")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 {
+			return errors.New("unexpected bootstrap arguments")
+		}
+		specData, err := os.ReadFile(*specPath)
+		if err != nil {
+			return fmt.Errorf("failed to read supervisor spec: %w", err)
+		}
+		client := druid.NewClient(*druidURL)
+		created, err := client.Install(ctx, specData)
+		if err != nil {
+			return fmt.Errorf("failed to install supervisor: %w", err)
+		}
+		if created {
+			fmt.Fprintln(out, "supervisor created")
+		} else {
+			fmt.Fprintln(out, "supervisor already installed")
+		}
+
+		var specDoc struct {
+			Type string `json:"type"`
+			Spec struct {
+				DataSchema struct {
+					DataSource string `json:"dataSource"`
+				} `json:"dataSchema"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(specData, &specDoc); err != nil {
+			return fmt.Errorf("failed to parse supervisor spec: %w", err)
+		}
+		id := specDoc.Spec.DataSchema.DataSource
+		if id == "" {
+			return errors.New("supervisor spec missing dataSource")
+		}
+
+		deadline := time.Now().Add(*waitDuration)
+		var lastState string
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			state, err := client.State(ctx, id)
+			if err == nil {
+				lastState = state
+				if state == "RUNNING" {
+					fmt.Fprintf(out, "supervisor %s is RUNNING\n", id)
+					return nil
+				}
+			}
+			if time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		return fmt.Errorf("timeout waiting for supervisor %s to be RUNNING (current state: %s)", id, lastState)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
