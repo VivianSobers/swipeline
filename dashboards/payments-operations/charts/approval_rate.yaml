@@ -1,21 +1,10 @@
-slice_name: Approval Rate
+slice_name: "Approval Rate"
 viz_type: big_number_total
-params:
-  adhoc_filters: []
-  datasource: e4b3c2a1-0000-4000-8000-000000000002__table
-  viz_type: big_number_total
-  query_mode: sql
-  sql: |
-    SELECT
-      CASE
-        WHEN COUNT(*) = 0 THEN NULL
-        ELSE CAST(SUM(CASE WHEN "decision" = 'APPROVE' THEN 1 ELSE 0 END) AS DOUBLE) / COUNT(*)
-      END AS "approval_rate"
-    FROM "swipeline_decisions"
-    WHERE "run_id" = :run_id
-query_context: null
+params: {"adhoc_filters":[],"all_columns":[],"datasource":"e4b3c2a1-0000-4000-8000-000000000002__table","groupby":[],"metric":{"expressionType":"SQL","hasCustomLabel":true,"label":"approval_rate","optionName":"metric_approval_rate","sqlExpression":"CASE WHEN COUNT(*) = 0 THEN NULL ELSE CAST(SUM(CASE WHEN \"decision\" = 'APPROVE' THEN 1 ELSE 0 END) AS DOUBLE) / COUNT(*) END"},"metrics":[{"expressionType":"SQL","hasCustomLabel":true,"label":"approval_rate","optionName":"metric_approval_rate","sqlExpression":"CASE WHEN COUNT(*) = 0 THEN NULL ELSE CAST(SUM(CASE WHEN \"decision\" = 'APPROVE' THEN 1 ELSE 0 END) AS DOUBLE) / COUNT(*) END"}],"query_mode":"aggregate","row_limit":10000,"time_range":"No filter","viz_type":"big_number_total"}
+query_context: |
+  {"datasource":{"id":"e4b3c2a1-0000-4000-8000-000000000002","type":"table"},"queries":[{"columns":[],"filters":[],"metrics":[{"expressionType":"SQL","hasCustomLabel":true,"label":"approval_rate","optionName":"metric_approval_rate","sqlExpression":"CASE WHEN COUNT(*) = 0 THEN NULL ELSE CAST(SUM(CASE WHEN \"decision\" = 'APPROVE' THEN 1 ELSE 0 END) AS DOUBLE) / COUNT(*) END"}],"row_limit":10000,"time_range":"No filter"}],"result_format":"json","result_type":"full"}
 cache_timeout: null
 uuid: e4b3c2a1-0000-4000-8000-000000000012
 version: 1.0.0
 dataset_uuid: e4b3c2a1-0000-4000-8000-000000000002
-description: Approved final decisions divided by all final decisions (including stand-ins)
+description: "Approved final decisions divided by all final decisions (including stand-ins)"

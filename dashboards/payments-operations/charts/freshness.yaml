@@ -1,24 +1,10 @@
-slice_name: Freshness and Integrity
+slice_name: "Freshness and Integrity"
 viz_type: table
-params:
-  adhoc_filters: []
-  datasource: e4b3c2a1-0000-4000-8000-000000000002__table
-  viz_type: table
-  query_mode: sql
-  sql: |
-    SELECT
-      MAX(__time) AS "max_time",
-      (EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) - EXTRACT(EPOCH FROM MAX(__time))) AS "ingestion_lag_seconds",
-      COUNT(*) AS "total_count",
-      CASE
-        WHEN COUNT(*) = 0 THEN 0.0
-        ELSE CAST(SUM(CASE WHEN "decision_source" = 'STAND_IN' THEN 1 ELSE 0 END) AS DOUBLE) / COUNT(*)
-      END AS "standin_share"
-    FROM "swipeline_decisions"
-    WHERE "run_id" = :run_id
-query_context: null
+params: {"adhoc_filters":[],"all_columns":[],"datasource":"e4b3c2a1-0000-4000-8000-000000000002__table","groupby":[],"metrics":[{"expressionType":"SQL","hasCustomLabel":true,"label":"max_time","optionName":"metric_max_time","sqlExpression":"MAX(__time)"},{"expressionType":"SQL","hasCustomLabel":true,"label":"ingestion_lag_seconds","optionName":"metric_ingestion_lag_seconds","sqlExpression":"EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) - EXTRACT(EPOCH FROM MAX(__time))"},{"expressionType":"SQL","hasCustomLabel":true,"label":"total_count","optionName":"metric_total_count","sqlExpression":"COUNT(*)"},{"expressionType":"SQL","hasCustomLabel":true,"label":"standin_share","optionName":"metric_standin_share","sqlExpression":"CASE WHEN COUNT(*) = 0 THEN 0.0 ELSE CAST(SUM(CASE WHEN decision_source = 'STAND_IN' THEN 1 ELSE 0 END) AS DOUBLE) / COUNT(*) END"}],"query_mode":"aggregate","row_limit":10000,"time_range":"No filter","viz_type":"table"}
+query_context: |
+  {"datasource":{"id":"e4b3c2a1-0000-4000-8000-000000000002","type":"table"},"queries":[{"columns":[],"filters":[],"metrics":[{"expressionType":"SQL","hasCustomLabel":true,"label":"max_time","optionName":"metric_max_time","sqlExpression":"MAX(__time)"},{"expressionType":"SQL","hasCustomLabel":true,"label":"ingestion_lag_seconds","optionName":"metric_ingestion_lag_seconds","sqlExpression":"EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) - EXTRACT(EPOCH FROM MAX(__time))"},{"expressionType":"SQL","hasCustomLabel":true,"label":"total_count","optionName":"metric_total_count","sqlExpression":"COUNT(*)"},{"expressionType":"SQL","hasCustomLabel":true,"label":"standin_share","optionName":"metric_standin_share","sqlExpression":"CASE WHEN COUNT(*) = 0 THEN 0.0 ELSE CAST(SUM(CASE WHEN decision_source = 'STAND_IN' THEN 1 ELSE 0 END) AS DOUBLE) / COUNT(*) END"}],"row_limit":10000,"time_range":"No filter"}],"result_format":"json","result_type":"full"}
 cache_timeout: null
 uuid: e4b3c2a1-0000-4000-8000-000000000016
 version: 1.0.0
 dataset_uuid: e4b3c2a1-0000-4000-8000-000000000002
-description: Ingestion freshness and stand-in metrics. merchant_distinct_estimate: approximate distinct cards in recent 60 seconds.
+description: "Ingestion freshness and stand-in metrics. merchant_distinct_estimate: approximate distinct cards in recent 60 seconds."

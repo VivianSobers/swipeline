@@ -1,23 +1,10 @@
-slice_name: Decline Reasons
-viz_type: echarts_timeseries_bar
-params:
-  adhoc_filters: []
-  datasource: e4b3c2a1-0000-4000-8000-000000000002__table
-  viz_type: echarts_timeseries_bar
-  query_mode: sql
-  sql: |
-    SELECT
-      "reason",
-      "decision_source",
-      COUNT(*) AS "decline_count"
-    FROM "swipeline_decisions"
-    WHERE "run_id" = :run_id
-      AND "decision" = 'DECLINE'
-    GROUP BY "reason", "decision_source"
-    ORDER BY "decline_count" DESC
-query_context: null
+slice_name: "Decline Reasons"
+viz_type: table
+params: {"adhoc_filters":[{"clause":"WHERE","comparator":"DECLINE","expressionType":"SIMPLE","operator":"==","subject":"decision"}],"all_columns":[],"datasource":"e4b3c2a1-0000-4000-8000-000000000002__table","groupby":["reason","decision_source"],"metrics":[{"expressionType":"SQL","hasCustomLabel":true,"label":"decline_count","optionName":"metric_decline_count","sqlExpression":"COUNT(*)"}],"query_mode":"aggregate","row_limit":10000,"time_range":"No filter","viz_type":"table"}
+query_context: |
+  {"datasource":{"id":"e4b3c2a1-0000-4000-8000-000000000002","type":"table"},"queries":[{"columns":["reason","decision_source"],"filters":[{"col":"decision","op":"==","val":"DECLINE"}],"metrics":[{"expressionType":"SQL","hasCustomLabel":true,"label":"decline_count","optionName":"metric_decline_count","sqlExpression":"COUNT(*)"}],"row_limit":10000,"time_range":"No filter"}],"result_format":"json","result_type":"full"}
 cache_timeout: null
 uuid: e4b3c2a1-0000-4000-8000-000000000013
 version: 1.0.0
 dataset_uuid: e4b3c2a1-0000-4000-8000-000000000002
-description: Count of declined decisions grouped by primary decline reason and source
+description: "Count of declined decisions grouped by primary decline reason and source"

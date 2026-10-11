@@ -1,28 +1,10 @@
-slice_name: Fraud Flags by MCC
-viz_type: echarts_timeseries_bar
-params:
-  adhoc_filters: []
-  datasource: e4b3c2a1-0000-4000-8000-000000000002__table
-  viz_type: echarts_timeseries_bar
-  query_mode: sql
-  sql: |
-    SELECT "mcc", 'CARD_TESTING' AS "flag", COUNT(*) AS "flag_count"
-    FROM "swipeline_decisions"
-    WHERE "run_id" = :run_id AND MV_CONTAINS("fraud_flags", 'CARD_TESTING')
-    GROUP BY "mcc"
-    UNION ALL
-    SELECT "mcc", 'CARD_VELOCITY' AS "flag", COUNT(*) AS "flag_count"
-    FROM "swipeline_decisions"
-    WHERE "run_id" = :run_id AND MV_CONTAINS("fraud_flags", 'CARD_VELOCITY')
-    GROUP BY "mcc"
-    UNION ALL
-    SELECT "mcc", 'SPEND_ANOMALY' AS "flag", COUNT(*) AS "flag_count"
-    FROM "swipeline_decisions"
-    WHERE "run_id" = :run_id AND MV_CONTAINS("fraud_flags", 'SPEND_ANOMALY')
-    GROUP BY "mcc"
-query_context: null
+slice_name: "Fraud Flags by MCC"
+viz_type: table
+params: {"adhoc_filters":[],"all_columns":[],"datasource":"e4b3c2a1-0000-4000-8000-000000000002__table","groupby":["mcc"],"metrics":[{"expressionType":"SQL","hasCustomLabel":true,"label":"CARD_TESTING","optionName":"metric_CARD_TESTING","sqlExpression":"SUM(CASE WHEN MV_CONTAINS(fraud_flags, 'CARD_TESTING') THEN 1 ELSE 0 END)"},{"expressionType":"SQL","hasCustomLabel":true,"label":"CARD_VELOCITY","optionName":"metric_CARD_VELOCITY","sqlExpression":"SUM(CASE WHEN MV_CONTAINS(fraud_flags, 'CARD_VELOCITY') THEN 1 ELSE 0 END)"},{"expressionType":"SQL","hasCustomLabel":true,"label":"SPEND_ANOMALY","optionName":"metric_SPEND_ANOMALY","sqlExpression":"SUM(CASE WHEN MV_CONTAINS(fraud_flags, 'SPEND_ANOMALY') THEN 1 ELSE 0 END)"}],"query_mode":"aggregate","row_limit":10000,"time_range":"No filter","viz_type":"table"}
+query_context: |
+  {"datasource":{"id":"e4b3c2a1-0000-4000-8000-000000000002","type":"table"},"queries":[{"columns":["mcc"],"filters":[],"metrics":[{"expressionType":"SQL","hasCustomLabel":true,"label":"CARD_TESTING","optionName":"metric_CARD_TESTING","sqlExpression":"SUM(CASE WHEN MV_CONTAINS(fraud_flags, 'CARD_TESTING') THEN 1 ELSE 0 END)"},{"expressionType":"SQL","hasCustomLabel":true,"label":"CARD_VELOCITY","optionName":"metric_CARD_VELOCITY","sqlExpression":"SUM(CASE WHEN MV_CONTAINS(fraud_flags, 'CARD_VELOCITY') THEN 1 ELSE 0 END)"},{"expressionType":"SQL","hasCustomLabel":true,"label":"SPEND_ANOMALY","optionName":"metric_SPEND_ANOMALY","sqlExpression":"SUM(CASE WHEN MV_CONTAINS(fraud_flags, 'SPEND_ANOMALY') THEN 1 ELSE 0 END)"}],"row_limit":10000,"time_range":"No filter"}],"result_format":"json","result_type":"full"}
 cache_timeout: null
 uuid: e4b3c2a1-0000-4000-8000-000000000014
 version: 1.0.0
 dataset_uuid: e4b3c2a1-0000-4000-8000-000000000002
-description: Fraud flags by MCC. Fraud flags can overlap across transactions.
+description: "Fraud flags by MCC. Fraud flags can overlap across transactions."

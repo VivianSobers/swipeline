@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -194,5 +195,47 @@ func TestClientSQL(t *testing.T) {
 	}
 	if counts.Count != 42 || counts.Distinct != 42 {
 		t.Fatalf("unexpected DecisionCounts: %+v", counts)
+	}
+}
+
+func TestDecisionCountsRequiresExactDistinct(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Context map[string]any `json:"context"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		if value, ok := payload.Context["useApproximateCountDistinct"]; !ok || value != false {
+			t.Error("reconciliation must disable approximate distinct counts")
+		}
+		fmt.Fprint(w, `[{"total_count":1000,"distinct_count":1000}]`)
+	}))
+	defer server.Close()
+	if _, err := NewClient(server.URL).DecisionCounts(context.Background(), "run-1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDecisionCountsRejectsMalformedAggregates(t *testing.T) {
+	for _, response := range []string{`[]`, `[{}]`, `[{"total_count":null,"distinct_count":null}]`, `[{"total_count":1.5,"distinct_count":1}]`, `[{"total_count":-1,"distinct_count":-1}]`, `[{"total_count":1,"distinct_count":2}]`, `[{"total_count":"1","distinct_count":1}]`, `[{"total_count":1,"distinct_count":1},{"total_count":1,"distinct_count":1}]`} {
+		t.Run(response, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, response) }))
+			defer server.Close()
+			if counts, err := NewClient(server.URL).DecisionCounts(context.Background(), "run-1"); err == nil {
+				t.Fatalf("accepted malformed counts: %+v", counts)
+			}
+		})
+	}
+}
+
+func TestDecisionCountsPreservesIntegerPrecision(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `[{"total_count":9007199254740993,"distinct_count":9007199254740993}]`)
+	}))
+	defer server.Close()
+	counts, err := NewClient(server.URL).DecisionCounts(context.Background(), "run-1")
+	if err != nil || counts.Count != 9007199254740993 || counts.Distinct != 9007199254740993 {
+		t.Fatalf("lost exact count: %+v, %v", counts, err)
 	}
 }

@@ -204,10 +204,18 @@ func (c *Client) State(ctx context.Context, id string) (string, error) {
 }
 
 func (c *Client) SQL(ctx context.Context, query string, params ...any) ([]map[string]any, error) {
+	return c.sql(ctx, query, nil, params...)
+}
+
+func (c *Client) sql(ctx context.Context, query string, queryContext map[string]any, params ...any) ([]map[string]any, error) {
 	sqlURL := fmt.Sprintf("%s/druid/v2/sql", c.Base)
 
 	payload := map[string]any{
 		"query": query,
+	}
+
+	if queryContext != nil {
+		payload["context"] = queryContext
 	}
 
 	if len(params) > 0 {
@@ -254,7 +262,11 @@ func (c *Client) SQL(ctx context.Context, query string, params ...any) ([]map[st
 	}
 
 	var rows []map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+	decoder := json.NewDecoder(resp.Body)
+	if queryContext != nil {
+		decoder.UseNumber()
+	}
+	if err := decoder.Decode(&rows); err != nil {
 		return nil, fmt.Errorf("failed to parse druid sql response: %w", err)
 	}
 
@@ -268,29 +280,37 @@ type DecisionCounts struct {
 
 func (c *Client) DecisionCounts(ctx context.Context, runID string) (DecisionCounts, error) {
 	query := "SELECT COUNT(*) AS total_count, COUNT(DISTINCT transaction_id) AS distinct_count FROM swipeline_decisions WHERE run_id = ?"
-	rows, err := c.SQL(ctx, query, runID)
+	rows, err := c.sql(ctx, query, map[string]any{"useApproximateCountDistinct": false}, runID)
 	if err != nil {
 		return DecisionCounts{}, err
 	}
-	if len(rows) == 0 {
-		return DecisionCounts{}, nil
+	if len(rows) != 1 {
+		return DecisionCounts{}, fmt.Errorf("expected one decision count row, got %d", len(rows))
 	}
 	var res DecisionCounts
+	found := map[string]bool{}
 	for k, v := range rows[0] {
-		var n int64
-		switch num := v.(type) {
-		case float64:
-			n = int64(num)
-		case int64:
-			n = num
-		case int:
-			n = int64(num)
+		key := strings.ToLower(k)
+		if key != "total_count" && key != "distinct_count" {
+			continue
 		}
-		if strings.EqualFold(k, "total_count") {
+		number, ok := v.(json.Number)
+		if !ok {
+			return DecisionCounts{}, fmt.Errorf("invalid %s: %v", key, v)
+		}
+		n, err := number.Int64()
+		if err != nil || n < 0 {
+			return DecisionCounts{}, fmt.Errorf("invalid %s: %v", key, v)
+		}
+		found[key] = true
+		if key == "total_count" {
 			res.Count = n
-		} else if strings.EqualFold(k, "distinct_count") {
+		} else {
 			res.Distinct = n
 		}
+	}
+	if !found["total_count"] || !found["distinct_count"] || res.Distinct > res.Count {
+		return DecisionCounts{}, fmt.Errorf("invalid decision count row: %v", rows[0])
 	}
 	return res, nil
 }

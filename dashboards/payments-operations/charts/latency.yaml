@@ -1,37 +1,10 @@
-slice_name: Decision Latency
-viz_type: echarts_timeseries_bar
-params:
-  adhoc_filters: []
-  datasource: e4b3c2a1-0000-4000-8000-000000000002__table
-  viz_type: echarts_timeseries_bar
-  query_mode: sql
-  sql: |
-    SELECT
-      CASE
-        WHEN "decision_latency_ms" < 5.0 THEN '0-5'
-        WHEN "decision_latency_ms" < 10.0 THEN '5-10'
-        WHEN "decision_latency_ms" < 20.0 THEN '10-20'
-        WHEN "decision_latency_ms" < 35.0 THEN '20-35'
-        WHEN "decision_latency_ms" < 50.0 THEN '35-50'
-        ELSE '50+'
-      END AS "latency_bucket",
-      COUNT(*) AS "bucket_count",
-      AVG("decision_latency_ms") AS "mean_latency_ms",
-      MAX("decision_latency_ms") AS "max_latency_ms"
-    FROM "swipeline_decisions"
-    WHERE "run_id" = :run_id
-    GROUP BY
-      CASE
-        WHEN "decision_latency_ms" < 5.0 THEN '0-5'
-        WHEN "decision_latency_ms" < 10.0 THEN '5-10'
-        WHEN "decision_latency_ms" < 20.0 THEN '10-20'
-        WHEN "decision_latency_ms" < 35.0 THEN '20-35'
-        WHEN "decision_latency_ms" < 50.0 THEN '35-50'
-        ELSE '50+'
-      END
-query_context: null
+slice_name: "Decision Latency"
+viz_type: table
+params: {"adhoc_filters":[],"all_columns":[],"datasource":"e4b3c2a1-0000-4000-8000-000000000002__table","groupby":[{"expressionType":"SQL","label":"latency_bucket","sqlExpression":"CASE WHEN decision_latency_ms \u003c 5 THEN '0-5' WHEN decision_latency_ms \u003c 10 THEN '5-10' WHEN decision_latency_ms \u003c 20 THEN '10-20' WHEN decision_latency_ms \u003c 35 THEN '20-35' WHEN decision_latency_ms \u003c 50 THEN '35-50' ELSE '50+' END"}],"metrics":[{"expressionType":"SQL","hasCustomLabel":true,"label":"bucket_count","optionName":"metric_bucket_count","sqlExpression":"COUNT(*)"},{"expressionType":"SQL","hasCustomLabel":true,"label":"mean_latency_ms","optionName":"metric_mean_latency_ms","sqlExpression":"AVG(decision_latency_ms)"},{"expressionType":"SQL","hasCustomLabel":true,"label":"max_latency_ms","optionName":"metric_max_latency_ms","sqlExpression":"MAX(decision_latency_ms)"}],"query_mode":"aggregate","row_limit":10000,"time_range":"No filter","viz_type":"table"}
+query_context: |
+  {"datasource":{"id":"e4b3c2a1-0000-4000-8000-000000000002","type":"table"},"queries":[{"columns":[{"expressionType":"SQL","label":"latency_bucket","sqlExpression":"CASE WHEN decision_latency_ms \u003c 5 THEN '0-5' WHEN decision_latency_ms \u003c 10 THEN '5-10' WHEN decision_latency_ms \u003c 20 THEN '10-20' WHEN decision_latency_ms \u003c 35 THEN '20-35' WHEN decision_latency_ms \u003c 50 THEN '35-50' ELSE '50+' END"}],"filters":[],"metrics":[{"expressionType":"SQL","hasCustomLabel":true,"label":"bucket_count","optionName":"metric_bucket_count","sqlExpression":"COUNT(*)"},{"expressionType":"SQL","hasCustomLabel":true,"label":"mean_latency_ms","optionName":"metric_mean_latency_ms","sqlExpression":"AVG(decision_latency_ms)"},{"expressionType":"SQL","hasCustomLabel":true,"label":"max_latency_ms","optionName":"metric_max_latency_ms","sqlExpression":"MAX(decision_latency_ms)"}],"row_limit":10000,"time_range":"No filter"}],"result_format":"json","result_type":"full"}
 cache_timeout: null
 uuid: e4b3c2a1-0000-4000-8000-000000000015
 version: 1.0.0
 dataset_uuid: e4b3c2a1-0000-4000-8000-000000000002
-description: Decision latency distribution. Druid latency measures admission to final choice and excludes the commit, with Prometheus as the authority for the 50/100 ms targets.
+description: "Decision latency distribution. Druid latency measures admission to final choice and excludes the commit, with Prometheus as the authority for the 50/100 ms targets."
