@@ -28,7 +28,7 @@ def read_kafka_range(
         .option("startingOffsets", start_json)
         .option("endingOffsets", end_json)
         .option("failOnDataLoss", "true")
-        .option("kafka.consumer.isolation.level", "read_committed")
+        .option("kafka.isolation.level", "read_committed")
         .load()
     )
     return df
