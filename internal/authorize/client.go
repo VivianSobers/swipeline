@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,7 +15,34 @@ import (
 
 	"github.com/VivianSobers/swipeline/internal/auth"
 	"github.com/VivianSobers/swipeline/internal/contract"
+	"github.com/VivianSobers/swipeline/internal/lifecycle"
 )
+
+// Sentinel errors returned by Client for lifecycle and admission API responses.
+var (
+	ErrBadRequest         = errors.New("bad request")
+	ErrNotFound           = errors.New("not found")
+	ErrConflict           = errors.New("conflict")
+	ErrServiceUnavailable = errors.New("service unavailable")
+)
+
+// StatusError wraps an HTTP error status, response body, and optional sentinel error.
+type StatusError struct {
+	StatusCode int
+	Body       string
+	Err        error
+}
+
+func (e *StatusError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("HTTP %d (%s): %s", e.StatusCode, e.Err.Error(), e.Body)
+	}
+	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Body)
+}
+
+func (e *StatusError) Unwrap() error {
+	return e.Err
+}
 
 // Client calls one gateway.
 type Client struct {
@@ -120,4 +148,36 @@ func (c *Client) Send(ctx context.Context, e contract.Event) (auth.Final, error)
 		return auth.Final{}, parent.Err()
 	}
 	return auth.Final{}, fmt.Errorf("unresolved authorization %s: rerun the same run to resume", e.TransactionID)
+}
+
+// SendLifecycle sends a lifecycle transition event to the gateway.
+// Returns lifecycle.Receipt on HTTP 202 Accepted, or a typed StatusError on failure.
+func (c *Client) SendLifecycle(ctx context.Context, e lifecycle.Event) (lifecycle.Receipt, error) {
+	status, body, err := c.call(ctx, http.MethodPost, "/v1/lifecycle", e.EventID, e)
+	if err != nil {
+		return lifecycle.Receipt{}, err
+	}
+	if status == http.StatusAccepted {
+		var receipt lifecycle.Receipt
+		if err := json.Unmarshal(body, &receipt); err != nil {
+			return lifecycle.Receipt{}, fmt.Errorf("decode lifecycle receipt: %w", err)
+		}
+		return receipt, nil
+	}
+	var sentinel error
+	switch status {
+	case http.StatusBadRequest:
+		sentinel = ErrBadRequest
+	case http.StatusNotFound:
+		sentinel = ErrNotFound
+	case http.StatusConflict:
+		sentinel = ErrConflict
+	case http.StatusServiceUnavailable:
+		sentinel = ErrServiceUnavailable
+	}
+	return lifecycle.Receipt{}, &StatusError{
+		StatusCode: status,
+		Body:       string(body),
+		Err:        sentinel,
+	}
 }

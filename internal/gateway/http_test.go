@@ -14,6 +14,7 @@ import (
 	"github.com/VivianSobers/swipeline/internal/auth"
 	"github.com/VivianSobers/swipeline/internal/contract"
 	"github.com/VivianSobers/swipeline/internal/generator"
+	"github.com/VivianSobers/swipeline/internal/lifecycle"
 	"github.com/VivianSobers/swipeline/internal/store"
 )
 
@@ -425,5 +426,108 @@ func TestRunDecisionCountsHTTP(t *testing.T) {
 	want := auth.RunCounts{RunID: r.ID, Admitted: 2, Final: 1, Pending: 1, StandIn: 1}
 	if got != want {
 		t.Fatalf("counts mismatch: got %+v, want %+v", got, want)
+	}
+}
+
+func TestLifecycleHTTPRoute(t *testing.T) {
+	s := &Service{}
+	r := httptest.NewRequest(http.MethodPost, "/v1/lifecycle", strings.NewReader("{}"))
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code == http.StatusNotFound {
+		t.Fatalf("route POST /v1/lifecycle not registered: got 404")
+	}
+}
+
+func TestLifecycleHTTP(t *testing.T) {
+	s, r, e := service(t)
+	ctx := context.Background()
+
+	if err := s.DB.Register(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+
+	received := time.Now().UnixMilli()
+	rows, err := s.DB.Admit(ctx, []store.Input{{Event: e, Received: received}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proposal := &auth.Proposal{
+		Request:    rows[0].Request,
+		ProposalID: contract.ID(e.TransactionID, "prop"),
+		Decision:   "APPROVE",
+		Reason:     "OK",
+		Flags:      []string{},
+		Score:      10,
+	}
+	if _, err := s.DB.Finalize(ctx, []store.Choice{{ID: e.TransactionID, Proposal: proposal}}); err != nil {
+		t.Fatal(err)
+	}
+
+	lcEvt, err := lifecycle.New(
+		e.RunID,
+		e.TransactionID,
+		e.SourceSeq,
+		2,
+		string(lifecycle.KindClear),
+		e.EventID,
+		received+1000,
+		received+1000,
+		e.AuthorizationDate,
+		e.Currency,
+		e.AmountMinor,
+		e.MerchantID,
+		e.IssuerBankID,
+		e.AcquirerBankID,
+		e.ReferenceVersion,
+		rows[0].Request.Epoch,
+		rows[0].Request.CloseDay,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Missing or mismatched Idempotency-Key -> 400
+	w := invoke(s, http.MethodPost, "/v1/lifecycle", lcEvt, "")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing idempotency key, got %d", w.Code)
+	}
+	w = invoke(s, http.MethodPost, "/v1/lifecycle", lcEvt, "wrong-key")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for mismatched idempotency key, got %d", w.Code)
+	}
+
+	// 2. Malformed body -> 400
+	w = invoke(s, http.MethodPost, "/v1/lifecycle", []byte("{not-json"), lcEvt.EventID)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for malformed json, got %d", w.Code)
+	}
+
+	// 3. Unknown transaction ID -> 404
+	unknown := lcEvt
+	unknown.TransactionID = "unknown-tx"
+	unknown.EventID = contract.ID(unknown.TransactionID, unknown.Kind, "2")
+	w = invoke(s, http.MethodPost, "/v1/lifecycle", unknown, unknown.EventID)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown transaction, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 4. Valid submission -> 202
+	w = invoke(s, http.MethodPost, "/v1/lifecycle", lcEvt, lcEvt.EventID)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted, got %d: %s", w.Code, w.Body.String())
+	}
+	var receipt lifecycle.Receipt
+	if err := json.Unmarshal(w.Body.Bytes(), &receipt); err != nil || receipt.EventID != lcEvt.EventID {
+		t.Fatalf("invalid receipt response: %s", w.Body.String())
+	}
+
+	// 5. Conflict submission (same event ID, altered payload hash) -> 409
+	conflicting := lcEvt
+	conflicting.PayloadHash = "0000000000000000000000000000000000000000000000000000000000000000"
+	w = invoke(s, http.MethodPost, "/v1/lifecycle", conflicting, conflicting.EventID)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict, got %d: %s", w.Code, w.Body.String())
 	}
 }

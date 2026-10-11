@@ -17,6 +17,7 @@ import (
 
 	"github.com/VivianSobers/swipeline/internal/auth"
 	"github.com/VivianSobers/swipeline/internal/contract"
+	"github.com/VivianSobers/swipeline/internal/lifecycle"
 	"github.com/VivianSobers/swipeline/internal/preview"
 )
 
@@ -176,6 +177,18 @@ func TestAuthorizationReplayCLI(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 			return
 		}
+		if r.URL.Path == "/v1/lifecycle" {
+			var evt lifecycle.Event
+			_ = json.NewDecoder(r.Body).Decode(&evt)
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(lifecycle.Receipt{
+				EventID:    evt.EventID,
+				SealEpoch:  1,
+				CloseDay:   "2026-10-08",
+				ReceivedAt: time.Now().UnixMilli(),
+			})
+			return
+		}
 		var e contract.Event
 		_ = json.NewDecoder(r.Body).Decode(&e)
 		_ = json.NewEncoder(w).Encode(auth.Final{Request: auth.Request{Event: e}, DecisionID: "decision", Decision: "APPROVE"})
@@ -278,5 +291,44 @@ func TestReconcileCLI(t *testing.T) {
 	err = run(context.Background(), []string{"reconcile", "--gateway", gwSrv.URL}, &out, &errs)
 	if err == nil || !strings.Contains(err.Error(), "missing --run-id") {
 		t.Fatalf("expected missing --run-id error, got: %v", err)
+	}
+}
+
+func TestInspectCLI(t *testing.T) {
+	var out, errs bytes.Buffer
+
+	// Missing --transaction-id flag
+	err := run(context.Background(), []string{"inspect"}, &out, &errs)
+	if err == nil || !strings.Contains(err.Error(), "missing --transaction-id") {
+		t.Fatalf("expected missing --transaction-id error, got: %v", err)
+	}
+
+	// Valid inspect against mock spark endpoint
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("transaction_id") != "tx-test-123" {
+			http.Error(w, "unexpected tx id", 400)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"transaction_id": "tx-test-123",
+			"status": "CLEARED",
+			"amounts": {"authorized_amount": 5000, "cleared_amount": 5000, "currency": "USD"},
+			"state_hash": "hash1",
+			"state_version": 2,
+			"events": [],
+			"postings": []
+		}`))
+	}))
+	defer server.Close()
+
+	out.Reset()
+	errs.Reset()
+	err = run(context.Background(), []string{"inspect", "--transaction-id", "tx-test-123", "--spark", server.URL}, &out, &errs)
+	if err != nil {
+		t.Fatalf("unexpected inspect error: %v", err)
+	}
+	if !strings.Contains(out.String(), `"status": "CLEARED"`) {
+		t.Fatalf("expected output to contain CLEARED, got: %s", out.String())
 	}
 }

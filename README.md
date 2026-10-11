@@ -177,7 +177,89 @@ Operational limits for network analytics:
 - Never reset offsets on a populated datasource (rebuild into a fresh datasource instead). You must never reset offsets on an active datasource.
 - The full profile does not fit the 14 GB laptop or standard two-core CI runners; run full acceptance on the four-core reference server.
 
+## Follow a Transaction's Lifecycle
+
+Swipeline tracks transactions through their entire lifecycle — from real-time authorization through clearing, reversals, disputes, and lakehouse financial settlement.
+
+### Architecture and Lifecycle Flows
+
+The lifecycle subsystem pairs an event-driven ledger journal with an ACID lakehouse powered by Apache Spark 4.1.3, Apache Hudi 1.1.0, and SeaweedFS (S3-compatible object storage).
+
+Four canonical transaction lifecycle flows are supported:
+1. **Clearing (`CLEARED`)**: An approved transaction receives a `CLEAR` event. The batch reducer creates a clearing settlement posting with an exact 150 bps (1.50%) interchange fee.
+2. **Pre-clearing Reversal (`REVERSED`)**: An authorization is cancelled by a `REVERSAL` event before clearing occurs. Status transitions to `REVERSED` with 0 settlement postings generated.
+3. **Post-clearing Reversal (`REVERSED`)**: A reversal arrives after clearing. Status transitions to `REVERSED` and generates a cancelling settlement posting that exactly mirrors and offsets the original principal and 150 bps fee.
+4. **Chargeback (`CHARGED_BACK`)**: Supports out-of-order event arrival. A `CHARGEBACK` event arriving before clearing is journaled unapplied; once the matching `CLEAR` event arrives, the reducer reconciles state to `CHARGED_BACK` with both clearing and chargeback postings present. Attempts to clear an already reversed transaction are rejected and quarantined.
+
+### Storage Topology
+
+Hudi Copy-on-Write (COW) tables reside in SeaweedFS under `s3a://swipeline/lakehouse/`:
+- `table_transactions`: Snapshot of transaction state, current status (`CLEARED`, `REVERSED`, `CHARGED_BACK`), balance amounts, and state hashes.
+- `table_ledger_events`: Append-only chronological audit log of all transition events ordered by `logical_seq`.
+- `table_settlement_postings`: Double-entry accounting postings with exact signed principal and interchange amounts.
+- `table_quarantine`: Quarantined events that violate state machine invariants.
+
+### Lifecycle Inspection CLI
+
+The `swipeline inspect` command queries Hudi snapshot tables and formats the complete lifecycle history as JSON:
+
+```sh
+swipeline inspect --transaction-id tx_20261008_000042 --spark http://spark-batch:8080
+```
+
+Example output:
+```json
+{
+  "transaction_id": "tx_20261008_000042",
+  "status": "CLEARED",
+  "amounts": {
+    "authorized_amount": 5400,
+    "cleared_amount": 5400,
+    "reversed_amount": 0,
+    "charged_back_amount": 0,
+    "currency": "USD"
+  },
+  "state_hash": "a1b2c3d4e5f67890",
+  "state_version": 2,
+  "events": [
+    {
+      "event_id": "evt_auth_42",
+      "logical_seq": 1,
+      "event_type": "AUTHORIZATION",
+      "event_time_ms": 1728345600000,
+      "payload_hash": "hash_auth_42"
+    },
+    {
+      "event_id": "evt_clear_42",
+      "logical_seq": 2,
+      "event_type": "CLEAR",
+      "event_time_ms": 1728345660000,
+      "payload_hash": "hash_clear_42"
+    }
+  ],
+  "postings": [
+    {
+      "posting_id": "post_clear_42",
+      "event_id": "evt_clear_42",
+      "posting_date": "2026-10-08",
+      "signed_principal": 5400,
+      "signed_interchange": 81,
+      "fee_schedule_version": "v1",
+      "adjustment_reason": null,
+      "batch_id": "batch_20261008_01"
+    }
+  ]
+}
+```
+
+### Capacity and Execution
+
+- **Local Storage Bringup**: `make m4-storage` brings up PostgreSQL, Kafka, and SeaweedFS, and creates topics.
+- **End-to-End Acceptance**: `make m4-demo` runs the core preflight check, executes replay with lifecycle scheduling, triggers batch ingestion, and validates lifecycle assertions.
+- **Preflight Memory Requirements**: Core profile stack requires at least 8.25 GiB of available memory verified via `tests/preflight.sh core`. Full multi-container acceptance should be run on the four-core reference server.
+
 ## Develop and check
+
 
 ```sh
 make fmt           # format Go code

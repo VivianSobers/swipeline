@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "event_id": "1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "run_id": "run-test-01",
+  "transaction_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source_seq": 102,
+  "lifecycle_seq": 2,
+  "kind": "REVERSE",
+  "parent_event_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "event_time_ms": 1773300020000,
+  "produced_at_ms": 1773300020050,
+  "authorization_date": "2026-10-11",
+  "currency": "USD",
+  "amount_minor": 5000,
+  "merchant_id": "merchant_coffee_101",
+  "issuer_bank_id": "bank_issuer_alpha",
+  "acquirer_bank_id": "bank_acquirer_omega",
+  "reference_version": "v1",
+  "seal_epoch": 1,
+  "close_day": "2026-10-11",
+  "payload_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+}

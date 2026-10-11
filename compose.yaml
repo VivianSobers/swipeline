@@ -230,6 +230,54 @@ services:
       options:
         max-size: 5m
         max-file: "2"
+  seaweedfs:
+    profiles: [core, full]
+    image: chrislusf/seaweedfs:4.48
+    mem_limit: 512m
+    command: ["server", "-s3", "-s3.port=8333", "-dir=/data"]
+    ports:
+      - "127.0.0.1:${SWIPELINE_SEAWEED_PORT:-8333}:8333"
+    volumes:
+      - seaweedfs-data:/data
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8333/"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+  spark-batch:
+    profiles: [core, full]
+    image: swipeline-spark:m4
+    build:
+      context: .
+      dockerfile: deploy/spark.Dockerfile
+    mem_limit: 2048m
+    environment:
+      SPARK_DRIVER_MEMORY: 1280m
+      SPARK_EXECUTOR_MEMORY: 1280m
+      S3_ENDPOINT: http://seaweedfs:8333
+      KAFKA_BROKERS: kafka:9092
+      POSTGRES_DSN: postgres://gateway:gateway-local@postgres:5432/gateway?sslmode=disable
+    volumes:
+      - spark-spill:/tmp/spark-spill
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_healthy
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
   druid-zk:
     profiles: [full]
     image: zookeeper:3.9.6
@@ -469,3 +517,5 @@ volumes:
   druid-shared:
   druid-cache:
   superset-secrets:
+  seaweedfs-data:
+  spark-spill:

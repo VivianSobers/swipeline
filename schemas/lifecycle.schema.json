@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:swipeline:lifecycle:v1",
+  "allOf": [{"$ref": "urn:swipeline:common:v1"}],
+  "type": "object",
+  "required": [
+    "lifecycle_seq",
+    "kind",
+    "parent_event_id",
+    "authorization_date",
+    "currency",
+    "amount_minor",
+    "merchant_id",
+    "issuer_bank_id",
+    "acquirer_bank_id",
+    "reference_version",
+    "seal_epoch",
+    "close_day"
+  ],
+  "properties": {
+    "lifecycle_seq": {"type": "integer", "enum": [2, 3]},
+    "kind": {"enum": ["CLEAR", "REVERSE", "CHARGEBACK"]},
+    "parent_event_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "authorization_date": {"type": "string", "format": "date"},
+    "currency": {"type": "string", "const": "USD"},
+    "amount_minor": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807},
+    "merchant_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+    "issuer_bank_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+    "acquirer_bank_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+    "reference_version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+    "seal_epoch": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "close_day": {"type": "string", "format": "date"}
+  },
+  "additionalProperties": true
+}

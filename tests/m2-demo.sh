@@ -22,7 +22,8 @@ ready() {
  done
  return 1
 }
-docker compose -p "$project" up -d --build --wait
+docker compose -p "$project" build gateway replayer
+docker compose -p "$project" up -d --wait
 ready
 (
  while :; do

@@ -1,1 +1,3 @@
 streaming/target/
+batch/__pycache__/
+batch/tests/__pycache__/

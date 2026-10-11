@@ -22,6 +22,7 @@ import (
 	"github.com/VivianSobers/swipeline/internal/contract"
 	"github.com/VivianSobers/swipeline/internal/druid"
 	"github.com/VivianSobers/swipeline/internal/generator"
+	"github.com/VivianSobers/swipeline/internal/inspect"
 	"github.com/VivianSobers/swipeline/internal/preview"
 	"github.com/VivianSobers/swipeline/internal/reconcile"
 	"github.com/VivianSobers/swipeline/internal/replay"
@@ -154,6 +155,7 @@ func run(ctx context.Context, args []string, out, errs io.Writer) error {
 		gatewayURL := flags.String("gateway", os.Getenv("SWIPELINE_GATEWAY_URL"), "authorization gateway URL")
 		mode := flags.String("deadline-mode", "latency", "latency (35/50 ms) or throughput (80/100 ms) deadlines")
 		lanes := flags.Int("lanes", 128, "bounded ordered card lanes")
+		queueDir := flags.String("queue-dir", "", "persistent disk queue directory for lifecycle events")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
@@ -170,7 +172,11 @@ func run(ctx context.Context, args []string, out, errs io.Writer) error {
 				base = "http://127.0.0.1:8081"
 			}
 			c := &authorize.Client{Base: base, HTTP: &http.Client{Timeout: 2 * time.Second}}
-			summary, err := authorize.Run(ctx, cfg, c, *mode, *lanes)
+			var opts []authorize.Option
+			if *queueDir != "" {
+				opts = append(opts, authorize.WithQueueDir(*queueDir))
+			}
+			summary, err := authorize.Run(ctx, cfg, c, *mode, *lanes, opts...)
 			if encodeErr := json.NewEncoder(out).Encode(summary); err == nil {
 				err = encodeErr
 			}
@@ -281,7 +287,29 @@ func run(ctx context.Context, args []string, out, errs io.Writer) error {
 			return errors.New("missing --druid")
 		}
 		return reconcile.Run(ctx, *gatewayURL, *druidURL, *runID, *waitDuration, out)
+	case "inspect":
+		flags := flag.NewFlagSet("inspect", flag.ContinueOnError)
+		flags.SetOutput(errs)
+		txID := flags.String("transaction-id", "", "transaction ID to inspect")
+		sparkURL := flags.String("spark", os.Getenv("SWIPELINE_SPARK_URL"), "Spark worker endpoint or command")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 {
+			return errors.New("unexpected inspect arguments")
+		}
+		if *txID == "" {
+			return errors.New("missing --transaction-id")
+		}
+		res, err := inspect.Inspect(ctx, *txID, *sparkURL)
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(res)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/VivianSobers/swipeline/internal/auth"
 	"github.com/VivianSobers/swipeline/internal/contract"
+	"github.com/VivianSobers/swipeline/internal/lifecycle"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -341,4 +342,153 @@ LEFT JOIN authorizations a ON a.run_id = r.run_id
 WHERE r.run_id = $1
 GROUP BY r.run_id`, runID).Scan(&c.Admitted, &c.Final, &c.Pending, &c.StandIn)
 	return c, err
+}
+
+// Lifecycle error sentinels.
+var (
+	ErrUnknownTransaction = errors.New("unknown transaction")
+	ErrDeclinedLifecycle  = errors.New("cannot apply lifecycle to declined transaction")
+	ErrLifecycleConflict  = errors.New("lifecycle conflict")
+	ErrLifecycleMismatch  = errors.New("lifecycle payload mismatch")
+)
+
+type failBeforeCommitKey struct{}
+
+// FailBeforeCommitInject returns a context that forces ReceiveLifecycle to fail immediately before commit.
+func FailBeforeCommitInject(ctx context.Context, err error) context.Context {
+	return context.WithValue(ctx, failBeforeCommitKey{}, err)
+}
+
+// ReceiveLifecycle admits a lifecycle transition event (clear, reverse, chargeback),
+// persists the admission receipt, and enqueues an outbox row for downstream streaming.
+func (s *Store) ReceiveLifecycle(ctx context.Context, e lifecycle.Event) (lifecycle.Receipt, error) {
+	if err := e.Validate(); err != nil {
+		return lifecycle.Receipt{}, err
+	}
+	if s.DB == nil {
+		return lifecycle.Receipt{}, errors.New("store db is nil")
+	}
+
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return lifecycle.Receipt{}, err
+	}
+	defer tx.Rollback()
+
+	// 1. Query authorization under exclusive row lock.
+	var requestJSONRaw, finalJSONRaw []byte
+	var authSealEpoch int64
+	var authCloseDay string
+	err = tx.QueryRowContext(ctx, `
+		SELECT seal_epoch, close_day::text, request_json, final_json
+		FROM authorizations
+		WHERE transaction_id = $1
+		FOR UPDATE
+	`, e.TransactionID).Scan(&authSealEpoch, &authCloseDay, &requestJSONRaw, &finalJSONRaw)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return lifecycle.Receipt{}, ErrUnknownTransaction
+		}
+		return lifecycle.Receipt{}, err
+	}
+
+	// 2. Reject if authorization outcome is missing or not APPROVE.
+	if len(finalJSONRaw) == 0 {
+		return lifecycle.Receipt{}, ErrDeclinedLifecycle
+	}
+	var finalObj struct {
+		Decision string `json:"decision"`
+	}
+	if err = json.Unmarshal(finalJSONRaw, &finalObj); err != nil {
+		return lifecycle.Receipt{}, fmt.Errorf("decode final_json: %w", err)
+	}
+	if finalObj.Decision != "APPROVE" {
+		return lifecycle.Receipt{}, ErrDeclinedLifecycle
+	}
+
+	// 3. Verify amount, currency, and bank IDs match authorization.
+	var reqObj struct {
+		RunID          string `json:"run_id"`
+		CardToken      string `json:"card_token"`
+		Currency       string `json:"currency"`
+		AmountMinor    int64  `json:"amount_minor"`
+		IssuerBankID   string `json:"issuer_bank_id"`
+		AcquirerBankID string `json:"acquirer_bank_id"`
+	}
+	if err = json.Unmarshal(requestJSONRaw, &reqObj); err != nil {
+		return lifecycle.Receipt{}, fmt.Errorf("decode request_json: %w", err)
+	}
+	if reqObj.AmountMinor != e.AmountMinor || reqObj.Currency != e.Currency ||
+		reqObj.IssuerBankID != e.IssuerBankID || reqObj.AcquirerBankID != e.AcquirerBankID {
+		return lifecycle.Receipt{}, ErrLifecycleMismatch
+	}
+
+	// 4. Check if event_id already exists in lifecycle_receipts.
+	var existingHash string
+	var existingSealEpoch int64
+	var existingCloseDay string
+	var existingReceivedAt int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT payload_hash, seal_epoch, close_day::text, floor(extract(epoch FROM created_at)*1000)::bigint
+		FROM lifecycle_receipts
+		WHERE event_id = $1
+	`, e.EventID).Scan(&existingHash, &existingSealEpoch, &existingCloseDay, &existingReceivedAt)
+	if err == nil {
+		if existingHash != e.PayloadHash {
+			return lifecycle.Receipt{}, ErrLifecycleConflict
+		}
+		return lifecycle.Receipt{
+			EventID:    e.EventID,
+			SealEpoch:  existingSealEpoch,
+			CloseDay:   existingCloseDay,
+			ReceivedAt: existingReceivedAt,
+		}, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return lifecycle.Receipt{}, err
+	}
+
+	// 5. Insert into lifecycle_receipts.
+	payloadJSON, err := json.Marshal(e)
+	if err != nil {
+		return lifecycle.Receipt{}, err
+	}
+
+	var receivedAt int64
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO lifecycle_receipts(event_id, transaction_id, payload_hash, payload_json, seal_epoch, close_day)
+		VALUES($1, $2, $3, $4, $5, $6::date)
+		RETURNING floor(extract(epoch FROM created_at)*1000)::bigint
+	`, e.EventID, e.TransactionID, e.PayloadHash, payloadJSON, authSealEpoch, authCloseDay).Scan(&receivedAt)
+	if err != nil {
+		return lifecycle.Receipt{}, err
+	}
+
+	// 6. Insert into outbox with topic swipeline.lifecycle.v1 and partition derived from card hash.
+	cardKey := auth.Key(reqObj.RunID, reqObj.CardToken)
+	part := auth.Partition(cardKey)
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO outbox(event_id, topic, key, partition, payload)
+		VALUES($1, 'swipeline.lifecycle.v1', $2, $3, $4)
+	`, e.EventID, []byte(e.TransactionID), part, payloadJSON)
+	if err != nil {
+		return lifecycle.Receipt{}, err
+	}
+
+	_, _ = tx.ExecContext(ctx, `UPDATE runs SET lifecycle_count = lifecycle_count + 1 WHERE run_id = $1`, reqObj.RunID)
+
+	if injected, ok := ctx.Value(failBeforeCommitKey{}).(error); ok && injected != nil {
+		return lifecycle.Receipt{}, injected
+	}
+
+	if err = tx.Commit(); err != nil {
+		return lifecycle.Receipt{}, err
+	}
+
+	return lifecycle.Receipt{
+		EventID:    e.EventID,
+		SealEpoch:  authSealEpoch,
+		CloseDay:   authCloseDay,
+		ReceivedAt: receivedAt,
+	}, nil
 }

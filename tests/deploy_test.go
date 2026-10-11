@@ -28,7 +28,9 @@ type service struct {
 		Condition string `json:"condition"`
 	} `json:"depends_on"`
 	Ports []struct {
-		HostIP string `json:"host_ip"`
+		HostIP    string `json:"host_ip"`
+		Target    int    `json:"target"`
+		Published string `json:"published"`
 	} `json:"ports"`
 	Volumes []struct {
 		Type     string `json:"type"`
@@ -74,6 +76,8 @@ func TestRenderedComposeBudgetsAndScope(t *testing.T) {
 		"gateway":           {"swipeline-gateway:m2", 256, true},
 		"flink-jobmanager":  {"swipeline-streaming:m2", 512, true},
 		"flink-taskmanager": {"swipeline-streaming:m2", 1536, false},
+		"seaweedfs":         {"chrislusf/seaweedfs:4.48", 512, true},
+		"spark-batch":       {"swipeline-spark:m4", 2048, false},
 	}
 	if len(services) != len(expected) {
 		t.Fatalf("unexpected services: %v", services)
@@ -245,5 +249,111 @@ func TestRenderedCanonicalParallelism(t *testing.T) {
 	}
 	if got := doc.Services["flink-jobmanager"].Environment["CANON_PARALLELISM"]; got != "1" {
 		t.Fatalf("canonicalizer parallelism = %q, want 1", got)
+	}
+}
+
+func TestRenderedSeaweedFSTopology(t *testing.T) {
+	expectedMissing := map[string]bool{
+		"seaweedfs": false,
+	}
+
+	profiles := map[string]map[string]service{
+		"core": rendered(t),
+		"full": renderedFull(t),
+	}
+
+	for profileName, services := range profiles {
+		s, ok := services["seaweedfs"]
+		if !ok {
+			if expectedMissing["seaweedfs"] {
+				continue
+			}
+			t.Fatalf("missing service seaweedfs in profile %s", profileName)
+		}
+		if expectedMissing["seaweedfs"] {
+			t.Fatal("service seaweedfs exists but was marked expectedMissing")
+		}
+		if s.Image != "chrislusf/seaweedfs:4.48" {
+			t.Fatalf("seaweedfs image pin = %q, want chrislusf/seaweedfs:4.48", s.Image)
+		}
+		if s.MemLimit != 512<<20 {
+			t.Fatalf("seaweedfs mem_limit = %d, want %d", s.MemLimit, 512<<20)
+		}
+		if s.Privileged {
+			t.Fatal("seaweedfs must not be privileged")
+		}
+		if len(s.Profiles) != 2 || s.Profiles[0] != "core" || s.Profiles[1] != "full" {
+			t.Fatalf("seaweedfs profiles = %v, want [core, full]", s.Profiles)
+		}
+		foundPort := false
+		for _, port := range s.Ports {
+			if port.HostIP != "127.0.0.1" {
+				t.Fatalf("seaweedfs public port must bind 127.0.0.1: %+v", port)
+			}
+			if port.Target == 8333 || port.Published == "8333" {
+				foundPort = true
+			}
+		}
+		if !foundPort {
+			t.Fatalf("seaweedfs port 8333 not published to loopback host: %+v", s.Ports)
+		}
+		foundVol := false
+		for _, v := range s.Volumes {
+			if v.Type == "volume" && v.Source == "seaweedfs-data" && v.Target == "/data" {
+				foundVol = true
+				break
+			}
+		}
+		if !foundVol {
+			t.Fatalf("seaweedfs persistent volume seaweedfs-data:/data not found: %+v", s.Volumes)
+		}
+	}
+}
+
+func TestRenderedSparkBatchTopology(t *testing.T) {
+	expectedMissing := map[string]bool{
+		"spark-batch": false,
+	}
+
+	profiles := map[string]map[string]service{
+		"core": rendered(t),
+		"full": renderedFull(t),
+	}
+
+	for profileName, services := range profiles {
+		s, ok := services["spark-batch"]
+		if !ok {
+			if expectedMissing["spark-batch"] {
+				continue
+			}
+			t.Fatalf("missing service spark-batch in profile %s", profileName)
+		}
+		if expectedMissing["spark-batch"] {
+			t.Fatal("service spark-batch exists but was marked expectedMissing")
+		}
+		if s.Image != "swipeline-spark:m4" {
+			t.Fatalf("spark-batch image pin = %q, want swipeline-spark:m4", s.Image)
+		}
+		if s.MemLimit != 2048<<20 {
+			t.Fatalf("spark-batch mem_limit = %d, want %d", s.MemLimit, 2048<<20)
+		}
+		if s.Privileged {
+			t.Fatal("spark-batch must not be privileged")
+		}
+		if len(s.Profiles) != 2 || s.Profiles[0] != "core" || s.Profiles[1] != "full" {
+			t.Fatalf("spark-batch profiles = %v, want [core, full]", s.Profiles)
+		}
+		if len(s.Ports) != 0 {
+			t.Fatalf("spark-batch internal service must not publish host ports: %+v", s.Ports)
+		}
+		for _, dep := range []string{"kafka", "postgres", "seaweedfs"} {
+			d, ok := s.DependsOn[dep]
+			if !ok {
+				t.Fatalf("spark-batch missing dependency on %s", dep)
+			}
+			if d.Condition != "service_healthy" {
+				t.Fatalf("spark-batch dependency on %s condition = %q, want service_healthy", dep, d.Condition)
+			}
+		}
 	}
 }

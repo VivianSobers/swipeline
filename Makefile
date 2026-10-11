@@ -57,4 +57,22 @@ dashboards:
 .PHONY: dashboard-bundle
 dashboard-bundle:
 	docker run --rm --user "$$(id -u):$$(id -g)" -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false -v "$(CURDIR):/src:z" -w /src $(GO_IMAGE) go run ./tools/dashboard -bundle
+.PHONY: m4-seaweedfs-smoke
+m4-seaweedfs-smoke:
+	@set -eu; project=swipeline-m4-smoke-$$$$; \
+	trap 'status=$$?; if [ $$status -ne 0 ]; then docker compose -p "$$project" logs; fi; docker compose -p "$$project" down -v --remove-orphans; exit $$status' EXIT TERM INT; \
+	docker compose -p "$$project" up -d --wait seaweedfs; \
+	docker run --rm --network "$${project}_default" --user "$$(id -u):$$(id -g)" -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false -e SWIPELINE_S3_ENDPOINT=http://seaweedfs:8333 -v "$(CURDIR):/src:ro,z" -w /src $(GO_IMAGE) go test ./tests -run TestSeaweedFSS3Compatibility -count=1 -v
+.PHONY: spark-check
+spark-check:
+	docker build -f deploy/spark.Dockerfile -t swipeline-spark:m4 .
+	docker run --rm swipeline-spark:m4 python -c "import pyspark, psycopg2; assert pyspark.__version__ == '4.1.3'; sc = pyspark.SparkContext('local[1]', 'check'); jvm = sc._jvm; jvm.org.apache.spark.sql.hudi.HoodieSparkSessionExtension(); sc.stop(); print(pyspark.__version__)"
+.PHONY: m4-storage
+m4-storage:
+	docker compose up -d --wait postgres kafka seaweedfs
+	docker compose exec -T kafka bash /opt/swipeline/topics.sh
+.PHONY: m4-demo
+m4-demo:
+	@sh tests/preflight.sh core
+	@sh tests/m4-demo.sh
 

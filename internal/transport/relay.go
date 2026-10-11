@@ -20,6 +20,19 @@ func Prefix(ok []bool) int {
 	return len(ok)
 }
 
+// LifecycleTopic is the Kafka topic name for lifecycle events.
+const LifecycleTopic = "swipeline.lifecycle.v1"
+
+// IsRelayableTopic reports whether a topic in the outbox should be forwarded to Kafka.
+func IsRelayableTopic(topic string) bool {
+	switch topic {
+	case "swipeline.auth.requests.v1", "swipeline.decisions.raw.v1", LifecycleTopic:
+		return true
+	default:
+		return false
+	}
+}
+
 type lane struct {
 	topic     string
 	partition int32
@@ -47,6 +60,9 @@ func RelayOnce(ctx context.Context, s *store.Store, p *kgo.Client) (int, error) 
 		if err = rows.Scan(&it.id, &it.record.Topic, &it.record.Key, &it.record.Partition, &it.record.Value); err != nil {
 			rows.Close()
 			return 0, err
+		}
+		if !IsRelayableTopic(it.record.Topic) {
+			continue
 		}
 		l := lane{it.record.Topic, it.record.Partition}
 		lanes[l] = append(lanes[l], it)
