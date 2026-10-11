@@ -7,3 +7,6 @@
 !deploy
 !dashboards
 !batch
+
+**/__pycache__
+**/*.pyc

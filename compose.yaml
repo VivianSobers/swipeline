@@ -234,7 +234,7 @@ services:
     profiles: [core, full]
     image: chrislusf/seaweedfs:4.48
     mem_limit: 512m
-    command: ["server", "-s3", "-s3.port=8333", "-dir=/data"]
+    command: ["mini", "-dir=/data", "-bucket=swipeline", "-s3.port=8333"]
     ports:
       - "127.0.0.1:${SWIPELINE_SEAWEED_PORT:-8333}:8333"
     volumes:
@@ -272,6 +272,12 @@ services:
         condition: service_healthy
       seaweedfs:
         condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 30s
     security_opt: [no-new-privileges:true]
     logging:
       driver: json-file
@@ -318,7 +324,7 @@ services:
         condition: service_healthy
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8081/status/health | grep -q true"]
+      test: [CMD-SHELL, "wget -q -T 3 -O - http://127.0.0.1:8081/status/health | grep -q true"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -346,7 +352,7 @@ services:
         condition: service_healthy
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8082/status/health | grep -q true"]
+      test: [CMD-SHELL, "wget -q -T 3 -O - http://127.0.0.1:8082/status/health | grep -q true"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -366,10 +372,11 @@ services:
       DRUID_XMX: 384m
       DRUID_XMS: 384m
       DRUID_MAXDIRECTMEMORYSIZE: 400m
+      druid_processing_buffer_sizeBytes: 50000000
       druid_segmentCache_locations: '[{"path":"/opt/druid/var/segment-cache","maxSize":2000000000}]'
     volumes:
       - druid-shared:/opt/shared
-      - druid-cache:/opt/druid/var/segment-cache
+      - druid-cache:/opt/druid/var
     depends_on:
       druid-zk:
         condition: service_healthy
@@ -377,7 +384,7 @@ services:
         condition: service_healthy
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8083/status/health | grep -q true"]
+      test: [CMD-SHELL, "wget -q -T 3 -O - http://127.0.0.1:8083/status/health | grep -q true"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -408,7 +415,7 @@ services:
         condition: service_healthy
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8091/status/health | grep -q true"]
+      test: [CMD-SHELL, "wget -q -T 3 -O - http://127.0.0.1:8091/status/health | grep -q true"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -439,7 +446,7 @@ services:
         condition: service_healthy
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8888/status/health | grep -q true"]
+      test: [CMD-SHELL, "wget -q -T 3 -O - http://127.0.0.1:8888/status/health | grep -q true"]
       interval: 2s
       timeout: 3s
       retries: 30

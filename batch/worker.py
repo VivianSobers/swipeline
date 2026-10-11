@@ -4,6 +4,7 @@ import logging
 import os
 import signal
 import time
+import threading
 
 from batch.db import BatchCoordinator
 
@@ -423,9 +424,21 @@ def main():
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
+    server = None
+    server_thread = None
+    if not args.once:
+        from batch.http import create_server
+        server = create_server(spark, BatchCoordinator)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+
     try:
         run_loop(spark, coordinator, once=args.once, interval_secs=interval_secs, stop_event=stop_event)
     finally:
+        if server:
+            server.shutdown()
+            server.server_close()
+            server_thread.join()
         try:
             coordinator.close()
         finally:

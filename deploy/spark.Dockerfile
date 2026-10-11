@@ -31,6 +31,8 @@ RUN curl -fsSL https://repo1.maven.org/maven2/org/apache/hudi/hudi-spark4.1-bund
 COPY batch/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
+COPY batch /app/batch
+
 COPY deploy/spark/spark-defaults.conf /opt/spark/conf/spark-defaults.conf
 
 RUN useradd -u 1000 -m -s /bin/bash spark \
@@ -39,3 +41,5 @@ RUN useradd -u 1000 -m -s /bin/bash spark \
 
 WORKDIR /app
 USER spark
+
+CMD ["python", "-m", "batch.worker", "--poll", "60s"]

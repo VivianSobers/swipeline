@@ -110,3 +110,56 @@ func TestReadmeLifecycleSection(t *testing.T) {
 		}
 	}
 }
+
+func TestSparkExecutableDeployment(t *testing.T) {
+	dockerfile, err := os.ReadFile("../deploy/spark.Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"COPY batch /app/batch", `CMD ["python", "-m", "batch.worker", "--poll", "60s"]`} {
+		if !strings.Contains(string(dockerfile), want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	compose, err := os.ReadFile("../compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"mini", "-dir=/data", "-bucket=swipeline"`, "http://127.0.0.1:8080/health", "SWIPELINE_SEAWEED_PORT"} {
+		if !strings.Contains(string(compose), want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	demo, err := os.ReadFile("m4-demo.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"TestInstalledLifecyclePrepare", "restart spark-batch", "SWIPELINE_SEAWEED_PORT=0", "SWIPELINE_FIXTURES"} {
+		if !strings.Contains(string(demo), want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if strings.Contains(string(demo), "batch.worker --once") {
+		t.Fatal("demo starts second Spark session")
+	}
+}
+
+func TestFreshAnalyticsRuntimeFixtures(t *testing.T) {
+	data, err := os.ReadFile("../deploy/superset.Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	owned := strings.Index(content, "mkdir -p /secrets")
+	switched := strings.LastIndex(content, "USER superset")
+	if owned < 0 || owned > switched || !strings.Contains(content, "chown superset:superset /secrets") {
+		t.Fatal("fresh Superset secrets volume must copy up an owned directory before USER superset")
+	}
+	data, err = os.ReadFile("m3-demo.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "if ! docker image inspect swipeline-superset:m3") {
+		t.Fatal("cached Superset image can retain stale source")
+	}
+}

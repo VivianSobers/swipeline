@@ -445,3 +445,49 @@ func TestReadmeAnalyticsLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestDruidHealthchecksUseAvailableClient(t *testing.T) {
+	data, err := os.ReadFile("../compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, port := range []string{"8081", "8082", "8083", "8091", "8888"} {
+		want := "wget -q -T 3 -O - http://127.0.0.1:" + port + "/status/health | grep -q true"
+		if !strings.Contains(content, want) {
+			t.Errorf("Druid healthcheck missing bounded installed client: %s", want)
+		}
+	}
+}
+
+func TestRenderedHistoricalProcessingFitsDirectMemory(t *testing.T) {
+	historical := renderedFull(t)["druid-historical"]
+	data, err := os.ReadFile("../compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	start := strings.Index(content, "  druid-historical:")
+	end := strings.Index(content[start:], "  druid-middlemanager:")
+	if start < 0 || end < 0 {
+		t.Fatal("historical topology missing")
+	}
+	if !strings.Contains(content[start:start+end], "druid_processing_buffer_sizeBytes: 50000000") {
+		t.Fatal("historical default buffers exceed its 400 MiB direct-memory cap")
+	}
+	if historical.MemLimit != 1024<<20 {
+		t.Fatal("historical memory cap changed")
+	}
+}
+
+func TestRenderedHistoricalCacheCopiesOwnedParent(t *testing.T) {
+	for _, volume := range renderedFull(t)["druid-historical"].Volumes {
+		if volume.Source == "druid-cache" {
+			if volume.Target != "/opt/druid/var" {
+				t.Fatalf("fresh historical cache must copy existing owned parent, got %s", volume.Target)
+			}
+			return
+		}
+	}
+	t.Fatal("historical cache volume missing")
+}

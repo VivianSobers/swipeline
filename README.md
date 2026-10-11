@@ -183,79 +183,37 @@ Swipeline tracks transactions through their entire lifecycle — from real-time 
 
 ### Architecture and Lifecycle Flows
 
-The lifecycle subsystem pairs an event-driven ledger journal with an ACID lakehouse powered by Apache Spark 4.1.3, Apache Hudi 1.1.0, and SeaweedFS (S3-compatible object storage).
+The lifecycle subsystem pairs an event-driven ledger journal with an ACID lakehouse powered by Apache Spark 4.1.3, Apache Hudi 1.2.1, and SeaweedFS (S3-compatible object storage).
 
 Four canonical transaction lifecycle flows are supported:
 1. **Clearing (`CLEARED`)**: An approved transaction receives a `CLEAR` event. The batch reducer creates a clearing settlement posting with an exact 150 bps (1.50%) interchange fee.
-2. **Pre-clearing Reversal (`REVERSED`)**: An authorization is cancelled by a `REVERSAL` event before clearing occurs. Status transitions to `REVERSED` with 0 settlement postings generated.
+2. **Pre-clearing Reversal (`REVERSED`)**: An authorization is cancelled by a `REVERSE` event before clearing occurs. Status transitions to `REVERSED` with 0 settlement postings generated.
 3. **Post-clearing Reversal (`REVERSED`)**: A reversal arrives after clearing. Status transitions to `REVERSED` and generates a cancelling settlement posting that exactly mirrors and offsets the original principal and 150 bps fee.
-4. **Chargeback (`CHARGED_BACK`)**: Supports out-of-order event arrival. A `CHARGEBACK` event arriving before clearing is journaled unapplied; once the matching `CLEAR` event arrives, the reducer reconciles state to `CHARGED_BACK` with both clearing and chargeback postings present. Attempts to clear an already reversed transaction are rejected and quarantined.
+4. **Chargeback (`CHARGED_BACK`)**: Supports out-of-order event arrival. A `CHARGEBACK` event arriving before clearing is journaled unapplied; once the matching `CLEAR` event arrives, the reducer reconciles state to `CHARGED_BACK` with both clearing and chargeback postings present. Attempts to clear an already reversed transaction are rejected by the gateway. Invalid journal envelopes are retained with their validation state.
 
 ### Storage Topology
 
-Hudi Copy-on-Write (COW) tables reside in SeaweedFS under `s3a://swipeline/lakehouse/`:
-- `table_transactions`: Snapshot of transaction state, current status (`CLEARED`, `REVERSED`, `CHARGED_BACK`), balance amounts, and state hashes.
-- `table_ledger_events`: Append-only chronological audit log of all transition events ordered by `logical_seq`.
-- `table_settlement_postings`: Double-entry accounting postings with exact signed principal and interchange amounts.
-- `table_quarantine`: Quarantined events that violate state machine invariants.
+Hudi Copy-on-Write (COW) tables reside in SeaweedFS under `s3a://swipeline/ledger/`:
+- `transactions`: Snapshot of transaction state, current status (`CLEARED`, `REVERSED`, `CHARGED_BACK`), balance amounts, and state hashes.
+- `ledger_events`: Append-only chronological audit log of all transition events ordered by `logical_seq`.
+- `settlement_postings`: Double-entry accounting postings with exact signed principal and interchange amounts.
 
 ### Lifecycle Inspection CLI
 
-The `swipeline inspect` command queries Hudi snapshot tables and formats the complete lifecycle history as JSON:
+The polling Spark worker exposes an internal JSON inspection endpoint on port 8080, using its existing Spark session. Requests hold the database advisory lock shared with all batch writers and return an error while an incomplete batch awaits recovery. Storage failures return errors. No inspection port is published to the host.
+
+Use the actual 64-character transaction ID returned by authorization:
 
 ```sh
-swipeline inspect --transaction-id tx_20261008_000042 --spark http://spark-batch:8080
+swipeline inspect --transaction-id "$TRANSACTION_ID"
 ```
 
-Example output:
-```json
-{
-  "transaction_id": "tx_20261008_000042",
-  "status": "CLEARED",
-  "amounts": {
-    "authorized_amount": 5400,
-    "cleared_amount": 5400,
-    "reversed_amount": 0,
-    "charged_back_amount": 0,
-    "currency": "USD"
-  },
-  "state_hash": "a1b2c3d4e5f67890",
-  "state_version": 2,
-  "events": [
-    {
-      "event_id": "evt_auth_42",
-      "logical_seq": 1,
-      "event_type": "AUTHORIZATION",
-      "event_time_ms": 1728345600000,
-      "payload_hash": "hash_auth_42"
-    },
-    {
-      "event_id": "evt_clear_42",
-      "logical_seq": 2,
-      "event_type": "CLEAR",
-      "event_time_ms": 1728345660000,
-      "payload_hash": "hash_clear_42"
-    }
-  ],
-  "postings": [
-    {
-      "posting_id": "post_clear_42",
-      "event_id": "evt_clear_42",
-      "posting_date": "2026-10-08",
-      "signed_principal": 5400,
-      "signed_interchange": 81,
-      "fee_schedule_version": "v1",
-      "adjustment_reason": null,
-      "batch_id": "batch_20261008_01"
-    }
-  ]
-}
-```
+The default command invokes `batch.inspect` inside the running Compose worker; this calls the worker's internal HTTP endpoint. A client on the Compose network can supply `--spark http://spark-batch:8080`. The JSON response includes status, minor-unit amounts, state hash/version, journal events and settlement postings. Interchange uses integer round-half-up at 150 bps.
 
 ### Capacity and Execution
 
 - **Local Storage Bringup**: `make m4-storage` brings up PostgreSQL, Kafka, and SeaweedFS, and creates topics.
-- **End-to-End Acceptance**: `make m4-demo` runs the core preflight check, executes replay with lifecycle scheduling, triggers batch ingestion, and validates lifecycle assertions.
+- **End-to-End Acceptance**: `make m4-demo` runs the core preflight check, creates approved deterministic fixtures, checks clearing, chargeback before clearing, both reversal paths and rejected competing transitions, then verifies duplicate and worker-restart stability against the installed tables.
 - **Preflight Memory Requirements**: Core profile stack requires at least 8.25 GiB of available memory verified via `tests/preflight.sh core`. Full multi-container acceptance should be run on the four-core reference server.
 
 ## Develop and check

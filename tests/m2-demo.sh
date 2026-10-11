@@ -23,7 +23,7 @@ ready() {
  return 1
 }
 docker compose -p "$project" build gateway replayer
-docker compose -p "$project" up -d --wait
+docker compose -p "$project" up -d --wait postgres kafka gateway replayer prometheus flink-jobmanager flink-taskmanager
 ready
 (
  while :; do
@@ -33,10 +33,10 @@ ready
   rc=0
   case "$action" in
    stop-taskmanager) docker compose -p "$project" stop flink-taskmanager || rc=$? ;;
-   start-taskmanager) docker compose -p "$project" up -d --wait --wait-timeout 180 || rc=$? ;;
+   start-taskmanager) docker compose -p "$project" up -d --wait --wait-timeout 180 postgres kafka gateway replayer prometheus flink-jobmanager flink-taskmanager || rc=$? ;;
    kill-gateway) docker compose -p "$project" kill -s SIGKILL gateway || rc=$? ;;
-   start-gateway) docker compose -p "$project" up -d --wait --wait-timeout 180 && ready || rc=$? ;;
-   restart-flink) docker compose -p "$project" restart flink-jobmanager flink-taskmanager && docker compose -p "$project" up -d --wait --wait-timeout 180 || rc=$? ;;
+   start-gateway) docker compose -p "$project" up -d --wait --wait-timeout 180 postgres kafka gateway replayer prometheus flink-jobmanager flink-taskmanager && ready || rc=$? ;;
+   restart-flink) docker compose -p "$project" restart flink-jobmanager flink-taskmanager && docker compose -p "$project" up -d --wait --wait-timeout 180 postgres kafka gateway replayer prometheus flink-jobmanager flink-taskmanager || rc=$? ;;
    *) rc=2 ;;
   esac
   printf '%s %s\n' "$id" "$rc" > "$work/result"

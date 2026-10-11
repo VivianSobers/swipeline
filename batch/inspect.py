@@ -22,73 +22,32 @@ def inspect_transaction(
     table_paths: dict[str, str] | None = None,
 ) -> dict:
     """Performs Hudi snapshot queries across transactions, ledger_events, and settlement_postings for tx_id."""
-    try:
-        from pyspark.sql.functions import col
-    except ImportError:
-        def col(name):
-            class _Col:
-                def __eq__(self, other):
-                    return True
-            return _Col()
-
     paths = table_paths or {
         "transactions": TABLE_TRANSACTIONS,
         "ledger_events": TABLE_LEDGER_EVENTS,
         "settlement_postings": TABLE_SETTLEMENT_POSTINGS,
     }
 
-    tx_record = None
-    events = []
-    postings = []
-
-    # 1. Query TABLE_TRANSACTIONS
-    tx_path = paths.get("transactions", TABLE_TRANSACTIONS)
-    try:
-        if is_hudi_table(spark, tx_path):
-            df = spark.read.format("hudi").load(tx_path)
-            rows = df.filter(col("transaction_id") == tx_id).collect()
-            if rows:
-                tx_record = rows[0].asDict(recursive=True)
-    except Exception as e:
-        logger.warning("Could not read transactions table: %s", e)
-
-    # 2. Query TABLE_LEDGER_EVENTS
-    events_path = paths.get("ledger_events", TABLE_LEDGER_EVENTS)
-    try:
-        if is_hudi_table(spark, events_path):
-            df = spark.read.format("hudi").load(events_path)
-            rows = (
-                df.filter(col("transaction_id") == tx_id)
-                .orderBy("logical_seq")
-                .collect()
-            )
-            for r in rows:
-                events.append(r.asDict(recursive=True))
-    except Exception as e:
-        logger.warning("Could not read ledger_events table: %s", e)
-
-    # 3. Query TABLE_SETTLEMENT_POSTINGS
-    postings_path = paths.get("settlement_postings", TABLE_SETTLEMENT_POSTINGS)
-    try:
-        if is_hudi_table(spark, postings_path):
-            df = spark.read.format("hudi").load(postings_path)
-            rows = (
-                df.filter(col("transaction_id") == tx_id)
-                .orderBy("posting_revision", "posting_date")
-                .collect()
-            )
-            for r in rows:
-                postings.append(r.asDict(recursive=True))
-    except Exception as e:
-        logger.warning("Could not read settlement_postings table: %s", e)
-
-
-    return {
-        "transaction_id": tx_id,
-        "transaction": tx_record,
-        "events": events,
-        "postings": postings,
-    }
+    result = {"transaction_id": tx_id, "transaction": None, "events": [], "postings": []}
+    for name in ("transactions", "ledger_events", "settlement_postings"):
+        path = paths[name]
+        if not is_hudi_table(spark, path):
+            continue
+        frame = spark.read.format("hudi").load(path)
+        # Column expressions bind literals; transaction IDs never become SQL source.
+        frame = frame.filter(frame["transaction_id"] == tx_id)
+        if name == "ledger_events":
+            frame = frame.orderBy("logical_seq", "event_id")
+        elif name == "settlement_postings":
+            frame = frame.orderBy("posting_revision", "posting_date", "posting_id")
+        rows = [row.asDict(recursive=True) for row in frame.collect()]
+        if name == "transactions":
+            if len(rows) > 1:
+                raise RuntimeError("Duplicate transaction snapshot")
+            result["transaction"] = rows[0] if rows else None
+        else:
+            result["events" if name == "ledger_events" else "postings"] = rows
+    return result
 
 
 def format_inspection_result(data: dict) -> dict:
@@ -153,11 +112,13 @@ def main():
     parser.add_argument("--transaction-id", required=True, help="Transaction ID to inspect")
     args = parser.parse_args()
 
-    from batch.session import get_spark_session
+    import os
+    from urllib.parse import urlencode
+    from urllib.request import urlopen
 
-    spark = get_spark_session("swipeline-inspect")
-    res = inspect_transaction(spark, args.transaction_id)
-    print(format_inspection_json(res))
+    endpoint = os.environ.get("SWIPELINE_INSPECT_URL", "http://127.0.0.1:8080")
+    with urlopen(endpoint.rstrip("/") + "/inspect?" + urlencode({"transaction_id": args.transaction_id}), timeout=120) as response:
+        print(response.read().decode("utf-8"))
 
 
 if __name__ == "__main__":

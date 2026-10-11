@@ -147,3 +147,25 @@ class TestInspectTransaction(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+class InspectFailureTests(unittest.TestCase):
+    def test_table_read_failure_is_not_not_found(self):
+        spark = MagicMock()
+        spark.read.format.return_value.load.side_effect = RuntimeError('offline')
+        with patch('batch.inspect.is_hudi_table', return_value=True):
+            with self.assertRaisesRegex(RuntimeError, 'offline'):
+                inspect_transaction(spark, "x' OR 1=1")
+
+    def test_missing_table_returns_not_found(self):
+        with patch('batch.inspect.is_hudi_table', return_value=False):
+            self.assertIsNone(inspect_transaction(MagicMock(), 'missing')['transaction'])
+
+    def test_identifier_is_column_literal(self):
+        spark = MagicMock()
+        frame = spark.read.format.return_value.load.return_value
+        frame.filter.return_value.collect.return_value = []
+        frame.filter.return_value.orderBy.return_value.collect.return_value = []
+        with patch('batch.inspect.is_hudi_table', return_value=True):
+            inspect_transaction(spark, "x' OR 1=1")
+        frame.__getitem__.assert_called_with('transaction_id')
+        frame.__getitem__.return_value.__eq__.assert_called_with("x' OR 1=1")

@@ -20,5 +20,5 @@ measure
 docker compose -p "$project" stop flink-taskmanager flink-jobmanager
 export SWIPELINE_AUTH_BUFFER_TIMEOUT_MS=100
 export SWIPELINE_FLINK_PROPERTIES='execution.buffer-timeout.interval: 100 ms'
-docker compose -p "$project" up -d --wait --wait-timeout 180
+docker compose -p "$project" up -d --wait --wait-timeout 180 postgres kafka gateway replayer prometheus flink-jobmanager flink-taskmanager
 measure

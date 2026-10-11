@@ -24,14 +24,12 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if ! docker image inspect swipeline-superset:m3 >/dev/null 2>&1; then
-	docker build -f deploy/superset.Dockerfile -t swipeline-superset:m3 .
-fi
+docker build -f deploy/superset.Dockerfile -t swipeline-superset:m3 .
 if ! docker image inspect swipeline-streaming:m2 >/dev/null 2>&1; then
 	docker build -f deploy/streaming.Dockerfile -t swipeline-streaming:m2 .
 fi
 
-COMPOSE_PROFILES=full docker compose -p "$project" up -d --build --wait
+COMPOSE_PROFILES=full docker compose -p "$project" up -d --build --wait postgres kafka gateway replayer prometheus flink-jobmanager flink-taskmanager druid-zk druid-coordinator-overlord druid-broker druid-historical druid-middlemanager druid-router superset
 
 # Background fault worker for fault injection during tests
 (
@@ -42,7 +40,7 @@ COMPOSE_PROFILES=full docker compose -p "$project" up -d --build --wait
 		rc=0
 		case "$action" in
 			restart-middlemanager)
-				COMPOSE_PROFILES=full docker compose -p "$project" restart druid-middlemanager && COMPOSE_PROFILES=full docker compose -p "$project" up -d --wait --wait-timeout 180 || rc=$?
+				COMPOSE_PROFILES=full docker compose -p "$project" restart druid-middlemanager && COMPOSE_PROFILES=full docker compose -p "$project" up -d --wait --wait-timeout 180 postgres kafka gateway replayer prometheus flink-jobmanager flink-taskmanager druid-zk druid-coordinator-overlord druid-broker druid-historical druid-middlemanager druid-router superset || rc=$?
 				;;
 			*) rc=2 ;;
 		esac

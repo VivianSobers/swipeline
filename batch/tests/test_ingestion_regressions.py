@@ -327,3 +327,9 @@ class TestCheckpointInstants(unittest.TestCase):
         posting['_hoodie_commit_time'] = '20261011100001'
         with patch('batch.worker.read_snapshot', return_value={posting['posting_id']: posting}):
             self.assertEqual(process_postings(MagicMock(), {state['transaction_id']: state}, {state['transaction_id']: accepted}, 'retry', '2026-10-12'), '20261011100001')
+
+class CanonicalDecisionIdentityTests(unittest.TestCase):
+    def test_flat_final_preserves_scheduler_parent_identity(self):
+        from batch.journal import parse_event_envelope
+        parsed = parse_event_envelope({'event_id': 'request-id', 'decision_id': 'decision-id', 'decision': 'APPROVE', 'transaction_id': 'tx', 'run_id': 'run', 'source_seq': 0, 'event_time_ms': 1, 'amount_minor': 100, 'payload_hash': 'hash'})
+        self.assertEqual(parsed['event_id'], 'request-id')

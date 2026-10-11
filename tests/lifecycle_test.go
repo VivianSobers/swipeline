@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/VivianSobers/swipeline/internal/inspect"
@@ -28,14 +30,14 @@ func VerifyLifecycleClearing(ctx context.Context, txID, sparkURL string) (*inspe
 	var hasAuth, hasClear bool
 	for _, evt := range res.Events {
 		switch evt.EventType {
-		case "AUTHORIZATION":
+		case "AUTH_DECISION":
 			hasAuth = true
 		case "CLEAR":
 			hasClear = true
 		}
 	}
 	if !hasAuth {
-		return &res, fmt.Errorf("journal missing AUTHORIZATION event")
+		return &res, fmt.Errorf("journal missing AUTH_DECISION event")
 	}
 	if !hasClear {
 		return &res, fmt.Errorf("journal missing CLEAR event")
@@ -53,7 +55,7 @@ func VerifyLifecycleClearing(ctx context.Context, txID, sparkURL string) (*inspe
 		return &res, fmt.Errorf("settlement postings missing clearing posting")
 	}
 
-	expectedFee := (clearPosting.SignedPrincipal * 150) / 10000
+	expectedFee := (clearPosting.SignedPrincipal*150 + 5000) / 10000
 	if clearPosting.SignedInterchange != expectedFee {
 		return &res, fmt.Errorf("interchange fee mismatch: expected %d (150 bps of %d), got %d",
 			expectedFee, clearPosting.SignedPrincipal, clearPosting.SignedInterchange)
@@ -75,7 +77,7 @@ func TestVerifyLifecycleClearingUnit(t *testing.T) {
 				Currency:         "USD",
 			},
 			Events: []inspect.JournalEvent{
-				{EventID: "evt-auth-1", EventType: "AUTHORIZATION", LogicalSeq: 1},
+				{EventID: "evt-auth-1", EventType: "AUTH_DECISION", LogicalSeq: 1},
 				{EventID: "evt-clear-1", EventType: "CLEAR", LogicalSeq: 2},
 			},
 			Postings: []inspect.Posting{
@@ -107,7 +109,7 @@ func TestInstalledLifecycleClearing(t *testing.T) {
 
 	txID := os.Getenv("SWIPELINE_TEST_TX_ID")
 	if txID == "" {
-		t.Skip("missing SWIPELINE_TEST_TX_ID")
+		t.Fatal("missing SWIPELINE_TEST_TX_ID")
 	}
 
 	ctx := context.Background()
@@ -157,8 +159,8 @@ func VerifyLifecycleOutOfOrder(ctx context.Context, txID, sparkURL string, phase
 		if res.Status != "CHARGED_BACK" {
 			return &res, fmt.Errorf("expected status CHARGED_BACK in phase 2, got %s", res.Status)
 		}
-		if len(res.Postings) < 2 {
-			return &res, fmt.Errorf("expected at least 2 postings (clearing and chargeback) in phase 2, got %d", len(res.Postings))
+		if len(res.Postings) != 2 {
+			return &res, fmt.Errorf("expected exactly 2 postings (clearing and chargeback) in phase 2, got %d", len(res.Postings))
 		}
 	default:
 		return &res, fmt.Errorf("unknown phase %d", phase)
@@ -176,7 +178,7 @@ func TestVerifyLifecycleOutOfOrderUnit(t *testing.T) {
 				TransactionID: "tx-ooo-phase1",
 				Status:        "AUTHORIZED",
 				Events: []inspect.JournalEvent{
-					{EventID: "evt-auth-1", EventType: "AUTHORIZATION", LogicalSeq: 1},
+					{EventID: "evt-auth-1", EventType: "AUTH_DECISION", LogicalSeq: 1},
 					{EventID: "evt-cb-1", EventType: "CHARGEBACK", LogicalSeq: 2},
 				},
 				Postings: []inspect.Posting{},
@@ -188,7 +190,7 @@ func TestVerifyLifecycleOutOfOrderUnit(t *testing.T) {
 			TransactionID: "tx-ooo-phase2",
 			Status:        "CHARGED_BACK",
 			Events: []inspect.JournalEvent{
-				{EventID: "evt-auth-1", EventType: "AUTHORIZATION", LogicalSeq: 1},
+				{EventID: "evt-auth-1", EventType: "AUTH_DECISION", LogicalSeq: 1},
 				{EventID: "evt-cb-1", EventType: "CHARGEBACK", LogicalSeq: 2},
 				{EventID: "evt-clear-1", EventType: "CLEAR", LogicalSeq: 3},
 			},
@@ -230,7 +232,7 @@ func TestInstalledLifecycleOutOfOrder(t *testing.T) {
 
 	txID := os.Getenv("SWIPELINE_TEST_TX_ID_OOO")
 	if txID == "" {
-		t.Skip("missing SWIPELINE_TEST_TX_ID_OOO")
+		t.Fatal("missing SWIPELINE_TEST_TX_ID_OOO")
 	}
 
 	ctx := context.Background()
@@ -283,6 +285,9 @@ func VerifyLifecycleReversalsAndChargebacks(ctx context.Context, sparkURL, preCl
 		resQuar, err := inspect.Inspect(ctx, quarantinedTxID, sparkURL)
 		if err != nil {
 			return fmt.Errorf("failed to inspect quarantined tx %s: %w", quarantinedTxID, err)
+		}
+		if len(resQuar.Postings) != 0 {
+			return fmt.Errorf("rejected transition created postings")
 		}
 		if resQuar.Status != "REVERSED" {
 			return fmt.Errorf("quarantined tx %s expected status REVERSED, got %s", quarantinedTxID, resQuar.Status)
@@ -343,12 +348,40 @@ func TestInstalledLifecycleReversalsAndChargebacks(t *testing.T) {
 	preTx := os.Getenv("SWIPELINE_TEST_TX_PRE_REV")
 	postTx := os.Getenv("SWIPELINE_TEST_TX_POST_REV")
 	quarTx := os.Getenv("SWIPELINE_TEST_TX_QUAR")
-	if preTx == "" || postTx == "" {
-		t.Skip("missing SWIPELINE_TEST_TX_PRE_REV or SWIPELINE_TEST_TX_POST_REV")
+	if preTx == "" || postTx == "" || quarTx == "" {
+		t.Fatal("missing SWIPELINE_TEST_TX_PRE_REV or SWIPELINE_TEST_TX_POST_REV")
 	}
 
 	ctx := context.Background()
 	if err := VerifyLifecycleReversalsAndChargebacks(ctx, sparkURL, preTx, postTx, quarTx); err != nil {
 		t.Fatalf("VerifyLifecycleReversalsAndChargebacks failed: %v", err)
+	}
+}
+
+func TestLifecycleFeeRoundsHalfUp(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(inspect.Result{TransactionID: "round", Status: "CLEARED", Events: []inspect.JournalEvent{{EventType: "AUTH_DECISION"}, {EventType: "CLEAR"}}, Postings: []inspect.Posting{{SignedPrincipal: 100, SignedInterchange: 2}}})
+	}))
+	defer server.Close()
+	if _, err := VerifyLifecycleClearing(context.Background(), "round", server.URL); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInstalledLifecycleMissingFixturesFail(t *testing.T) {
+	for _, name := range []string{"Clearing", "OutOfOrder", "ReversalsAndChargebacks", "Stability"} {
+		t.Run(name, func(t *testing.T) {
+			command := exec.Command(os.Args[0], "-test.run=^TestInstalledLifecycle"+name+"$")
+			for _, env := range os.Environ() {
+				if !strings.HasPrefix(env, "SWIPELINE_") {
+					command.Env = append(command.Env, env)
+				}
+			}
+			command.Env = append(command.Env, "SWIPELINE_SPARK=http://127.0.0.1:1")
+			output, err := command.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "missing SWIPELINE_") {
+				t.Fatalf("installed mode skipped missing inputs: %v %s", err, output)
+			}
+		})
 	}
 }

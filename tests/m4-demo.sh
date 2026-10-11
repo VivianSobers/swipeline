@@ -2,8 +2,9 @@
 set -eu
 export COMPOSE_PROFILES=core
 project=swipeline-m4-demo-$(date +%s)-$$
-export SWIPELINE_HTTP_PORT=0 SWIPELINE_PROM_PORT=0 SWIPELINE_GATEWAY_PORT=0 SWIPELINE_FLINK_PORT=0 SWIPELINE_SPARK_BATCH_PORT=0 SWIPELINE_SEAWEEDFS_PORT=0 SWIPELINE_SEAWEEDFS_S3_PORT=0
+export SWIPELINE_HTTP_PORT=0 SWIPELINE_PROM_PORT=0 SWIPELINE_GATEWAY_PORT=0 SWIPELINE_FLINK_PORT=0 SWIPELINE_SPARK_BATCH_PORT=0 SWIPELINE_SEAWEED_PORT=0
 work=$(mktemp -d)
+mkdir -p "$work/go-cache" "$work/go-mod"
 
 cleanup() {
 	rc=$?
@@ -29,23 +30,21 @@ if ! docker image inspect swipeline-streaming:m2 >/dev/null 2>&1; then
 	docker build -f deploy/streaming.Dockerfile -t swipeline-streaming:m2 .
 fi
 
-COMPOSE_PROFILES=core docker compose -p "$project" up -d --build --wait
+COMPOSE_PROFILES=core docker compose -p "$project" up -d --build --wait --wait-timeout 240 postgres kafka gateway replayer prometheus flink-jobmanager flink-taskmanager seaweedfs spark-batch
 
-# Run 100-event replay with lifecycle events
-run_id="m4-demo-$(date +%s)"
-docker compose -p "$project" exec -T replayer /swipeline replay --events 100 --run-id "$run_id" --gateway http://gateway:8081 --tps 25
-
-# Execute batch worker to ingest and seal batch
-docker compose -p "$project" exec -T spark-batch python3 -m batch.worker --once
-
-docker run --rm --network "${project}_default" --user "$(id -u):$(id -g)" \
-	-e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false \
-	-e SWIPELINE_TEST_DB="postgres://gateway:gateway-local@postgres:5432/gateway?sslmode=disable" \
-	-e SWIPELINE_TEST_GATEWAY="http://gateway:8081" \
-	-e SWIPELINE_KAFKA="kafka:9092" \
-	-e SWIPELINE_SPARK="http://spark-batch:8080" \
-	-e SWIPELINE_RUN_ID="$run_id" \
-	-v "$PWD:/src:ro,z" -w /src golang:1.27.2 \
-	sh -ec '
-		go test ./tests -run '\''^TestInstalledLifecycle'\'' -count=1 -v
-	'
+run_tests() {
+ docker run --rm --memory=1024m --cpus=2 --network "${project}_default" --user "$(id -u):$(id -g)" \
+  -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false \
+  -e SWIPELINE_TEST_DB="postgres://gateway:gateway-local@postgres:5432/gateway?sslmode=disable" \
+  -e SWIPELINE_TEST_GATEWAY="http://gateway:8081" \
+  -e SWIPELINE_KAFKA="kafka:9092" -e SWIPELINE_SPARK="http://spark-batch:8080" \
+  -e SWIPELINE_FIXTURES=/fixtures \
+  -v "$work/go-cache:/tmp/go-cache:z" -v "$work/go-mod:/tmp/go-mod:z" -v "$work:/fixtures:z" -v "$PWD:/src:ro,z" -w /src golang:1.27.2 \
+  sh -ec 'if [ -f /fixtures/ids.env ]; then set -a; . /fixtures/ids.env; set +a; fi; go test -p 1 ./tests -run "$1" -count=1 -v' sh "$1"
+}
+run_tests '^TestInstalledLifecyclePrepare$'
+# Restart the actual installed worker and assert complete snapshots retain IDs,
+# hashes, versions, posting dates and batch assignments.
+docker compose -p "$project" restart spark-batch
+docker compose -p "$project" up -d --wait --wait-timeout 240 spark-batch
+run_tests '^TestInstalledLifecycle(Clearing|OutOfOrder|ReversalsAndChargebacks|Stability|InspectionLock)$'
