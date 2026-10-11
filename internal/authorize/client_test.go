@@ -3,6 +3,7 @@ package authorize
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/VivianSobers/swipeline/internal/auth"
 	"github.com/VivianSobers/swipeline/internal/contract"
+	"github.com/VivianSobers/swipeline/internal/lifecycle"
 )
 
 func TestRegisterAcceptsOnlyCreated(t *testing.T) {
@@ -175,5 +177,118 @@ func TestSendLostReplyPollsKnownPending(t *testing.T) {
 	_, err := c.Send(context.Background(), contract.Event{Business: contract.Business{TransactionID: "id"}})
 	if err != nil || posts.Load() != 1 {
 		t.Fatalf("known pending transaction resubmitted: posts=%d err=%v", posts.Load(), err)
+	}
+}
+
+func TestSendLifecycleAccepted(t *testing.T) {
+	evt := lifecycle.Event{
+		EventID:       "evt-123456",
+		TransactionID: "tx-789",
+		Kind:          string(lifecycle.KindClear),
+		AmountMinor:   5000,
+	}
+	expectedReceipt := lifecycle.Receipt{
+		EventID:    "evt-123456",
+		SealEpoch:  1700000000,
+		CloseDay:   "2026-10-11",
+		ReceivedAt: 1700000001,
+	}
+
+	var gotKey string
+	var gotEvt lifecycle.Event
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/lifecycle" {
+			t.Errorf("unexpected call: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		gotKey = r.Header.Get("Idempotency-Key")
+		if err := json.NewDecoder(r.Body).Decode(&gotEvt); err != nil {
+			t.Errorf("decode request body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(expectedReceipt)
+	}))
+	defer s.Close()
+
+	c := Client{Base: s.URL, HTTP: s.Client()}
+	receipt, err := c.SendLifecycle(context.Background(), evt)
+	if err != nil {
+		t.Fatalf("SendLifecycle failed: %v", err)
+	}
+	if gotKey != evt.EventID {
+		t.Errorf("Idempotency-Key = %q, want %q", gotKey, evt.EventID)
+	}
+	if gotEvt.EventID != evt.EventID || gotEvt.TransactionID != evt.TransactionID {
+		t.Errorf("got event %+v, want %+v", gotEvt, evt)
+	}
+	if receipt != expectedReceipt {
+		t.Errorf("receipt = %+v, want %+v", receipt, expectedReceipt)
+	}
+}
+
+func TestSendLifecycleTypedErrors(t *testing.T) {
+	evt := lifecycle.Event{
+		EventID:       "evt-test",
+		TransactionID: "tx-test",
+	}
+
+	testCases := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantErr    error
+	}{
+		{
+			name:       "400 Bad Request",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":"invalid payload"}`,
+			wantErr:    ErrBadRequest,
+		},
+		{
+			name:       "404 Not Found",
+			statusCode: http.StatusNotFound,
+			body:       `{"error":"unknown transaction"}`,
+			wantErr:    ErrNotFound,
+		},
+		{
+			name:       "409 Conflict",
+			statusCode: http.StatusConflict,
+			body:       `{"error":"payload conflict"}`,
+			wantErr:    ErrConflict,
+		},
+		{
+			name:       "503 Service Unavailable",
+			statusCode: http.StatusServiceUnavailable,
+			body:       `{"error":"db busy"}`,
+			wantErr:    ErrServiceUnavailable,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.statusCode)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer s.Close()
+
+			c := Client{Base: s.URL, HTTP: s.Client()}
+			receipt, err := c.SendLifecycle(context.Background(), evt)
+			if err == nil {
+				t.Fatalf("expected error for status %d, got receipt %+v", tc.statusCode, receipt)
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("errors.Is(err, %v) = false; got err = %v", tc.wantErr, err)
+			}
+			var sErr *StatusError
+			if !errors.As(err, &sErr) {
+				t.Errorf("errors.As(err, &StatusError) = false; got %v", err)
+			} else if sErr.StatusCode != tc.statusCode {
+				t.Errorf("sErr.StatusCode = %d, want %d", sErr.StatusCode, tc.statusCode)
+			}
+		})
 	}
 }
