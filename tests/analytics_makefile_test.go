@@ -52,3 +52,37 @@ func TestAnalyticsMakefileDruidSmoke(t *testing.T) {
 		}
 	}
 }
+
+func TestAnalyticsMakefileSupersetCheck(t *testing.T) {
+	data, err := os.ReadFile("Makefile")
+	if err != nil {
+		data, err = os.ReadFile("../Makefile")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "superset-check:") {
+		t.Fatal("Makefile missing superset-check target")
+	}
+	if !strings.Contains(content, ".PHONY: superset-check") {
+		t.Fatal("Makefile missing .PHONY: superset-check")
+	}
+
+	idx := strings.Index(content, "superset-check:")
+	block := content[idx:]
+	if next := strings.Index(block[1:], "\n.PHONY:"); next != -1 {
+		block = block[:next+1]
+	}
+
+	for _, want := range []string{
+		"deploy/superset.Dockerfile",
+		"swipeline-superset:m3",
+		"pydruid",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("superset-check missing %q", want)
+		}
+	}
+}

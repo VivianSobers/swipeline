@@ -38,4 +38,8 @@ m3-druid-smoke:
 	trap 'status=$$?; if [ $$status -ne 0 ]; then COMPOSE_PROFILES=full docker compose -p "$$project" logs; fi; COMPOSE_PROFILES=full docker compose -p "$$project" down -v --remove-orphans; exit $$status' EXIT TERM INT; \
 	COMPOSE_PROFILES=full docker compose -p "$$project" up -d --wait postgres kafka druid-zk druid-coordinator-overlord druid-broker druid-historical druid-middlemanager druid-router; \
 	docker run --rm --network "$${project}_default" --user "$$(id -u):$$(id -g)" -v "$(CURDIR):/src:ro,z" -w /src $(GO_IMAGE) sh -ec 'curl -fsS -H "Content-Type: application/json" -d "{\"query\":\"SELECT 1\"}" http://druid-router:8888/druid/v2/sql | grep -q "1"'
+.PHONY: superset-check
+superset-check:
+	docker build -f deploy/superset.Dockerfile -t swipeline-superset:m3 .
+	docker run --rm swipeline-superset:m3 python -c "import importlib.metadata, pydruid, psycopg2; print(importlib.metadata.version('pydruid'))"
 
