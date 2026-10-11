@@ -238,3 +238,48 @@ func TestThroughputAndApprovalCharts(t *testing.T) {
 		}
 	}
 }
+
+func TestDeclineAndFraudCharts(t *testing.T) {
+	chartsDir := "dashboards/payments-operations/charts"
+	if _, err := os.Stat(chartsDir); err != nil {
+		chartsDir = "../dashboards/payments-operations/charts"
+	}
+	queriesDir := "dashboards/queries"
+	if _, err := os.Stat(queriesDir); err != nil {
+		queriesDir = "../dashboards/queries"
+	}
+
+	for _, name := range []string{"decline_reasons", "fraud_flags_by_mcc"} {
+		chartFile := filepath.Join(chartsDir, name+".yaml")
+		data, err := os.ReadFile(chartFile)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", chartFile, err)
+		}
+		sqlData, err := os.ReadFile(filepath.Join(queriesDir, name+".sql"))
+		if err != nil {
+			t.Fatalf("failed to read sql %s: %v", name, err)
+		}
+		var def dashboard.ChartDef
+		found := false
+		for _, d := range dashboard.ChartDefinitions {
+			if d.Name == name {
+				def = d
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("unknown chart %s", name)
+		}
+
+		want := dashboard.FormatChartYAML(def, string(sqlData))
+		got := string(data)
+		if got != want {
+			t.Errorf("chart %s committed YAML does not match generator output:\ngot:\n%s\nwant:\n%s", name, got, want)
+		}
+
+		if name == "fraud_flags_by_mcc" && !strings.Contains(got, "overlap") {
+			t.Errorf("fraud_flags_by_mcc chart description must note that flags can overlap")
+		}
+	}
+}

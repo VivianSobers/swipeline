@@ -1,0 +1,28 @@
+slice_name: Fraud Flags by MCC
+viz_type: echarts_timeseries_bar
+params:
+  adhoc_filters: []
+  datasource: e4b3c2a1-0000-4000-8000-000000000002__table
+  viz_type: echarts_timeseries_bar
+  query_mode: sql
+  sql: |
+    SELECT "mcc", 'CARD_TESTING' AS "flag", COUNT(*) AS "flag_count"
+    FROM "swipeline_decisions"
+    WHERE "run_id" = :run_id AND MV_CONTAINS("fraud_flags", 'CARD_TESTING')
+    GROUP BY "mcc"
+    UNION ALL
+    SELECT "mcc", 'CARD_VELOCITY' AS "flag", COUNT(*) AS "flag_count"
+    FROM "swipeline_decisions"
+    WHERE "run_id" = :run_id AND MV_CONTAINS("fraud_flags", 'CARD_VELOCITY')
+    GROUP BY "mcc"
+    UNION ALL
+    SELECT "mcc", 'SPEND_ANOMALY' AS "flag", COUNT(*) AS "flag_count"
+    FROM "swipeline_decisions"
+    WHERE "run_id" = :run_id AND MV_CONTAINS("fraud_flags", 'SPEND_ANOMALY')
+    GROUP BY "mcc"
+query_context: null
+cache_timeout: null
+uuid: e4b3c2a1-0000-4000-8000-000000000014
+version: 1.0.0
+dataset_uuid: e4b3c2a1-0000-4000-8000-000000000002
+description: Fraud flags by MCC. Fraud flags can overlap across transactions.
