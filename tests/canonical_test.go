@@ -2,6 +2,8 @@ package tests
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -279,5 +281,194 @@ func TestCanonicalDropDuplicateRawDecisions(t *testing.T) {
 
 	if canonCount != 1000 {
 		t.Fatalf("canonical count for installed-42 after duplicate injection = %d, want 1000", canonCount)
+	}
+}
+
+func TestCanonicalQuarantineConflictingRawDecisions(t *testing.T) {
+	brokers := os.Getenv("SWIPELINE_KAFKA")
+	if brokers == "" {
+		t.Skip("run through make m2-demo")
+	}
+	flinkBase := os.Getenv("SWIPELINE_FLINK")
+	if flinkBase == "" {
+		flinkBase = "http://flink-jobmanager:8081"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	jid, err := getFlinkJob(ctx, flinkBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rawConsumer, err := kgo.NewClient(
+		kgo.SeedBrokers(brokers),
+		kgo.ConsumeTopics("swipeline.decisions.raw.v1"),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rawConsumer.Close()
+
+	var target *kgo.Record
+	for target == nil {
+		fetch := rawConsumer.PollRecords(ctx, 256)
+		if err := fetch.Err(); err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range fetch.Records() {
+			var d struct {
+				RunID string `json:"run_id"`
+			}
+			if json.Unmarshal(r.Value, &d) == nil && d.RunID == "installed-42" {
+				target = r
+				break
+			}
+		}
+	}
+
+	var originalMap map[string]any
+	if err := json.Unmarshal(target.Value, &originalMap); err != nil {
+		t.Fatal(err)
+	}
+	originalAmount := originalMap["amount_minor"].(float64)
+
+	conflictingMap := make(map[string]any, len(originalMap))
+	for k, v := range originalMap {
+		conflictingMap[k] = v
+	}
+	conflictingMap["amount_minor"] = originalAmount + 1
+	conflictingBytes, err := json.Marshal(conflictingMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	initialCheckpoints, err := getFlinkCompletedCheckpoints(ctx, flinkBase, jid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dlqConsumer, err := kgo.NewClient(
+		kgo.SeedBrokers(brokers),
+		kgo.ConsumeTopics("swipeline.dlq.v1"),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dlqConsumer.Close()
+
+	drainCtx, drainCancel := context.WithTimeout(ctx, 2*time.Second)
+	for {
+		fetch := dlqConsumer.PollRecords(drainCtx, 256)
+		if fetch.IsClientClosed() || drainCtx.Err() != nil || fetch.Empty() {
+			break
+		}
+	}
+	drainCancel()
+
+	producer, err := kgo.NewClient(
+		kgo.SeedBrokers(brokers),
+		kgo.ProducerBatchMaxBytes(32768),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer producer.Close()
+
+	conflictingRecord := &kgo.Record{
+		Topic: "swipeline.decisions.raw.v1",
+		Key:   target.Key,
+		Value: conflictingBytes,
+	}
+	producer.Produce(ctx, conflictingRecord, func(_ *kgo.Record, err error) {
+		if err != nil {
+			t.Fatalf("produce error: %v", err)
+		}
+	})
+	if err := producer.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	for {
+		cp, err := getFlinkCompletedCheckpoints(ctx, flinkBase, jid)
+		if err == nil && cp >= initialCheckpoints+1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for flink checkpoint")
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+
+	h := sha256.Sum256(conflictingBytes)
+	dlqKey := hex.EncodeToString(h[:])
+
+	dlqMatches := 0
+	pollCtx, pollCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer pollCancel()
+	for {
+		fetch := dlqConsumer.PollRecords(pollCtx, 256)
+		if fetch.IsClientClosed() || pollCtx.Err() != nil {
+			break
+		}
+		for _, r := range fetch.Records() {
+			if string(r.Key) == dlqKey {
+				var dlq struct {
+					ErrorCode string `json:"error_code"`
+				}
+				if json.Unmarshal(r.Value, &dlq) == nil && dlq.ErrorCode == "DECISION_CONFLICT" {
+					dlqMatches++
+				}
+			}
+		}
+		if dlqMatches > 0 {
+			break
+		}
+	}
+
+	if dlqMatches != 1 {
+		t.Fatalf("dlq records with DECISION_CONFLICT = %d, want 1", dlqMatches)
+	}
+
+	canonConsumer, err := kgo.NewClient(
+		kgo.SeedBrokers(brokers),
+		kgo.ConsumeTopics("swipeline.decisions.v1"),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer canonConsumer.Close()
+
+	var canonMatches int
+	var canonAmount float64
+	cPollCtx, cPollCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cPollCancel()
+	for {
+		fetch := canonConsumer.PollRecords(cPollCtx, 256)
+		if fetch.IsClientClosed() || cPollCtx.Err() != nil || fetch.Empty() {
+			break
+		}
+		for _, r := range fetch.Records() {
+			if string(r.Key) == string(target.Key) {
+				canonMatches++
+				var d struct {
+					AmountMinor float64 `json:"amount_minor"`
+				}
+				if json.Unmarshal(r.Value, &d) == nil {
+					canonAmount = d.AmountMinor
+				}
+			}
+		}
+	}
+	if canonMatches != 1 {
+		t.Fatalf("expected 1 canonical record for %s, got %d", string(target.Key), canonMatches)
+	}
+	if canonAmount != originalAmount {
+		t.Fatalf("canonical record for %s changed: got %v, want original %v", string(target.Key), canonAmount, originalAmount)
 	}
 }
