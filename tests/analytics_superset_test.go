@@ -86,3 +86,31 @@ func TestSupersetSecretGeneration(t *testing.T) {
 		t.Fatalf("admin-password overwritten: was %s, now %s", passStr, string(passData2))
 	}
 }
+
+func TestSupersetInitScript(t *testing.T) {
+	script := "deploy/superset/init.sh"
+	if _, err := os.Stat(script); err != nil {
+		script = "../deploy/superset/init.sh"
+		if _, err := os.Stat(script); err != nil {
+			t.Fatal("cannot find init.sh")
+		}
+	}
+
+	data, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	for _, want := range []string{
+		"superset db upgrade",
+		"superset fab list-users",
+		"superset init",
+		"superset import-dashboards -p /app/dashboards/payments-operations.zip -u admin",
+		"exec gunicorn --workers 1 --threads 4 --timeout 60 -b 0.0.0.0:8088",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("init.sh missing expected command: %q", want)
+		}
+	}
+}

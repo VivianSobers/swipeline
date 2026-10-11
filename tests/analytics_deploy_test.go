@@ -314,3 +314,62 @@ func TestRenderedAnalyticsBootstrap(t *testing.T) {
 		t.Fatal("analytics-bootstrap does not mount /etc/swipeline/supervisor.json")
 	}
 }
+
+func TestRenderedSupersetService(t *testing.T) {
+	profile := os.Getenv("COMPOSE_PROFILES")
+	if profile != "full" {
+		services := rendered(t)
+		if _, ok := services["superset"]; ok {
+			t.Fatal("superset rendered in default profile")
+		}
+		return
+	}
+
+	services := renderedFull(t)
+	s, ok := services["superset"]
+	if !ok {
+		t.Fatal("missing superset service in full profile")
+	}
+
+	if s.Image != "swipeline-superset:m3" {
+		t.Fatalf("superset pin changed: %s", s.Image)
+	}
+	if s.MemLimit != 768<<20 {
+		t.Fatalf("superset memory limit: got %d, want %d", s.MemLimit, 768<<20)
+	}
+	if len(s.Profiles) != 1 || s.Profiles[0] != "full" {
+		t.Fatalf("superset profile regression: %v", s.Profiles)
+	}
+	if len(s.Ports) != 1 || s.Ports[0].HostIP != "127.0.0.1" {
+		t.Fatalf("superset public port must bind 127.0.0.1: %+v", s.Ports)
+	}
+
+	for dep, want := range map[string]string{
+		"postgres":            "service_healthy",
+		"analytics-bootstrap": "service_completed_successfully",
+	} {
+		cond, ok := s.DependsOn[dep]
+		if !ok || cond.Condition != want {
+			t.Fatalf("superset missing dependency %s with condition %s: %+v", dep, want, cond)
+		}
+	}
+
+	hasSecrets := false
+	for _, v := range s.Volumes {
+		if v.Target == "/secrets" && (v.Source == "superset-secrets" || strings.HasSuffix(v.Source, "superset-secrets")) {
+			hasSecrets = true
+			break
+		}
+	}
+	if !hasSecrets {
+		t.Fatalf("superset does not mount superset-secrets to /secrets: %+v", s.Volumes)
+	}
+
+	if len(s.Healthcheck.Test) == 0 {
+		t.Fatal("superset missing healthcheck")
+	}
+	healthCmd := strings.Join(s.Healthcheck.Test, " ")
+	if !strings.Contains(healthCmd, "http://127.0.0.1:8088/health") {
+		t.Fatalf("superset healthcheck test: %s", healthCmd)
+	}
+}
