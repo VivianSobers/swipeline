@@ -86,3 +86,35 @@ func TestAnalyticsMakefileSupersetCheck(t *testing.T) {
 		}
 	}
 }
+
+func TestAnalyticsMakefileSupersetPassword(t *testing.T) {
+	data, err := os.ReadFile("Makefile")
+	if err != nil {
+		data, err = os.ReadFile("../Makefile")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "superset-password:") {
+		t.Fatal("Makefile missing superset-password target")
+	}
+	if !strings.Contains(content, ".PHONY: superset-password") {
+		t.Fatal("Makefile missing .PHONY: superset-password")
+	}
+
+	idx := strings.Index(content, "superset-password:")
+	block := content[idx:]
+	if next := strings.Index(block[1:], "\n.PHONY:"); next != -1 {
+		block = block[:next+1]
+	}
+
+	for _, want := range []string{
+		"docker compose exec -T superset cat /secrets/admin-password",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("superset-password missing %q", want)
+		}
+	}
+}
