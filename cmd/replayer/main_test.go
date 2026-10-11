@@ -244,3 +244,39 @@ func TestBootstrapCommand(t *testing.T) {
 		t.Fatalf("unexpected bootstrap error: %v", err)
 	}
 }
+
+func TestReconcileCLI(t *testing.T) {
+	gwSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(auth.RunCounts{
+			RunID:    "run-cli",
+			Admitted: 50,
+			Final:    50,
+			Pending:  0,
+		})
+	}))
+	defer gwSrv.Close()
+
+	druidSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"total_count": float64(50), "distinct_count": float64(50)},
+		})
+	}))
+	defer druidSrv.Close()
+
+	var out, errs bytes.Buffer
+	err := run(context.Background(), []string{"reconcile", "--run-id", "run-cli", "--gateway", gwSrv.URL, "--druid", druidSrv.URL, "--wait", "1s"}, &out, &errs)
+	if err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	if !strings.Contains(out.String(), `"equal":true`) {
+		t.Fatalf("expected JSON output with equal=true, got: %s", out.String())
+	}
+
+	// Missing --run-id
+	err = run(context.Background(), []string{"reconcile", "--gateway", gwSrv.URL}, &out, &errs)
+	if err == nil || !strings.Contains(err.Error(), "missing --run-id") {
+		t.Fatalf("expected missing --run-id error, got: %v", err)
+	}
+}

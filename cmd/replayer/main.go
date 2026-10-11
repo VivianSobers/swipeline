@@ -23,6 +23,7 @@ import (
 	"github.com/VivianSobers/swipeline/internal/druid"
 	"github.com/VivianSobers/swipeline/internal/generator"
 	"github.com/VivianSobers/swipeline/internal/preview"
+	"github.com/VivianSobers/swipeline/internal/reconcile"
 	"github.com/VivianSobers/swipeline/internal/replay"
 )
 
@@ -71,7 +72,7 @@ func call(ctx context.Context, method, path string, body any, out io.Writer) err
 
 func run(ctx context.Context, args []string, out, errs io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: swipeline serve|replay|status|health|bootstrap")
+		return errors.New("usage: swipeline serve|replay|status|health|bootstrap|reconcile")
 	}
 	switch args[0] {
 	case "serve":
@@ -257,6 +258,29 @@ func run(ctx context.Context, args []string, out, errs io.Writer) error {
 		}
 
 		return fmt.Errorf("timeout waiting for supervisor %s to be RUNNING (current state: %s)", id, lastState)
+	case "reconcile":
+		flags := flag.NewFlagSet("reconcile", flag.ContinueOnError)
+		flags.SetOutput(errs)
+		runID := flags.String("run-id", "", "run ID to reconcile")
+		gatewayURL := flags.String("gateway", "http://127.0.0.1:8080", "Gateway URL")
+		druidURL := flags.String("druid", "http://druid-router:8888", "Druid router URL")
+		waitDuration := flags.Duration("wait", 2*time.Minute, "maximum wait duration for reconciliation")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 {
+			return errors.New("unexpected reconcile arguments")
+		}
+		if *runID == "" {
+			return errors.New("missing --run-id")
+		}
+		if *gatewayURL == "" {
+			return errors.New("missing --gateway")
+		}
+		if *druidURL == "" {
+			return errors.New("missing --druid")
+		}
+		return reconcile.Run(ctx, *gatewayURL, *druidURL, *runID, *waitDuration, out)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
