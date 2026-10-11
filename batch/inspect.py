@@ -69,7 +69,7 @@ def format_inspection_result(data: dict) -> dict:
             "event_id": e.get("event_id"),
             "logical_seq": int(e.get("logical_seq", 0)),
             "event_type": e.get("event_type"),
-            "event_time_ms": int(e.get("event_time_ms", 0)),
+            "event_time_ms": int(e.get("original_event_time_ms", e.get("event_time_ms", 0))),
             "payload_hash": e.get("payload_hash", ""),
         })
 

@@ -163,3 +163,15 @@ func TestFreshAnalyticsRuntimeFixtures(t *testing.T) {
 		t.Fatal("cached Superset image can retain stale source")
 	}
 }
+
+func TestM2LatencyStartsOnlyRequiredServices(t *testing.T) {
+	data, err := os.ReadFile("m2-latency.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, "docker compose") && strings.Contains(line, " up ") && !strings.Contains(line, "postgres kafka gateway replayer prometheus flink-jobmanager flink-taskmanager") {
+			t.Fatalf("unscoped latency startup: %s", line)
+		}
+	}
+}

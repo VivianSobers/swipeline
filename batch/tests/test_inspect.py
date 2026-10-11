@@ -169,3 +169,9 @@ class InspectFailureTests(unittest.TestCase):
             inspect_transaction(spark, "x' OR 1=1")
         frame.__getitem__.assert_called_with('transaction_id')
         frame.__getitem__.return_value.__eq__.assert_called_with("x' OR 1=1")
+
+class InspectEventTimestampTests(unittest.TestCase):
+    def test_persisted_journal_time_maps_to_public_field(self):
+        from batch.inspect import format_inspection_result
+        result = format_inspection_result({'events': [{'event_id': 'e', 'original_event_time_ms': 1791417600000}]})
+        self.assertEqual(result['events'][0]['event_time_ms'], 1791417600000)

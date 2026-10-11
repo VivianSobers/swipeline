@@ -15,7 +15,7 @@ measure() {
  docker run --rm --memory=768m --cpus=2 --network "${project}_default" --user "$(id -u):$(id -g)"   -e SWIPELINE_ENFORCE_BUDGETS="${SWIPELINE_ENFORCE_BUDGETS:-1}" -e GOMEMLIMIT=512MiB -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false   -e SWIPELINE_TEST_GATEWAY=http://gateway:8081 -e SWIPELINE_TEST_FLINK=http://flink-jobmanager:8081   -e SWIPELINE_EXPECT_BUFFER_MS="$SWIPELINE_AUTH_BUFFER_TIMEOUT_MS"   -v "$PWD:/src:ro,z" -w /src golang:1.27.2   go test ./tests -run '^TestInstalledSparseLatency$' -count=1 -v
 }
 export SWIPELINE_AUTH_BUFFER_TIMEOUT_MS=0 SWIPELINE_FLINK_PROPERTIES=
-docker compose -p "$project" up -d --build --wait
+docker compose -p "$project" up -d --build --wait postgres kafka gateway replayer prometheus flink-jobmanager flink-taskmanager
 measure
 docker compose -p "$project" stop flink-taskmanager flink-jobmanager
 export SWIPELINE_AUTH_BUFFER_TIMEOUT_MS=100

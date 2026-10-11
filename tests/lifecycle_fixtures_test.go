@@ -177,6 +177,11 @@ func TestInstalledLifecyclePrepare(t *testing.T) {
 	baseline := map[string]inspect.Result{}
 	for _, f := range finals {
 		baseline[f.TransactionID] = lifecycleSnapshot(t, ctx, endpoint, f.TransactionID)
+		for _, event := range baseline[f.TransactionID].Events {
+			if event.EventTimeMS <= 0 {
+				t.Fatal("installed journal event timestamp missing")
+			}
+		}
 	}
 	for _, e := range []lifecycle.Event{clears[0], clears[1], cb, pre, clears[3], post} {
 		send(e)
