@@ -112,8 +112,7 @@ func TestRenderedAnalyticsProfileTopology(t *testing.T) {
 	services := renderedFull(t)
 
 	expectedMissing := map[string]bool{
-		"druid-router":        true,
-		"druid-middlemanager": true,
+		"druid-router": true,
 	}
 
 	for name, want := range druidServices {
