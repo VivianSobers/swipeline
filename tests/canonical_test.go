@@ -183,6 +183,9 @@ func TestCanonicalDecisionsMatchFinals(t *testing.T) {
 }
 
 func TestCanonicalDropDuplicateRawDecisions(t *testing.T) {
+	if os.Getenv("SWIPELINE_TEST_GATEWAY") == "" {
+		t.Skip("run through make m2-demo")
+	}
 	brokers := os.Getenv("SWIPELINE_KAFKA")
 	if brokers == "" {
 		t.Skip("run through make m2-demo")
@@ -310,6 +313,9 @@ func TestCanonicalDropDuplicateRawDecisions(t *testing.T) {
 }
 
 func TestCanonicalQuarantineConflictingRawDecisions(t *testing.T) {
+	if os.Getenv("SWIPELINE_TEST_GATEWAY") == "" {
+		t.Skip("run through make m2-demo")
+	}
 	brokers := os.Getenv("SWIPELINE_KAFKA")
 	if brokers == "" {
 		t.Skip("run through make m2-demo")

@@ -325,3 +325,20 @@ func (s *Store) Backlog(ctx context.Context) (Backlog, error) {
 		FROM outbox WHERE sent_at IS NULL`).Scan(&b.Pending, &b.Unsent, &b.OldestUnsent)
 	return b, err
 }
+
+// Counts returns decision counts for runID.
+func (s *Store) Counts(ctx context.Context, runID string) (auth.RunCounts, error) {
+	var c auth.RunCounts
+	c.RunID = runID
+	err := s.DB.QueryRowContext(ctx, `
+SELECT
+	count(a.transaction_id),
+	count(a.transaction_id) FILTER (WHERE a.status = 'FINAL'),
+	count(a.transaction_id) FILTER (WHERE a.status = 'PENDING'),
+	count(a.transaction_id) FILTER (WHERE a.final_json->>'decision_source' = 'STAND_IN')
+FROM runs r
+LEFT JOIN authorizations a ON a.run_id = r.run_id
+WHERE r.run_id = $1
+GROUP BY r.run_id`, runID).Scan(&c.Admitted, &c.Final, &c.Pending, &c.StandIn)
+	return c, err
+}

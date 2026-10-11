@@ -378,3 +378,52 @@ func TestDeadlineBypassesBlockedProposal(t *testing.T) {
 		t.Fatalf("deadline behind blocked proposal: HTTP %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestRunDecisionCountsHTTP(t *testing.T) {
+	s, r, e := service(t)
+	ctx := context.Background()
+
+	// 404 for unknown run
+	if w := invoke(s, http.MethodGet, "/v1/runs/unknown-run/counts", nil, ""); w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown run, got %d", w.Code)
+	}
+
+	if err := s.DB.Register(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+
+	g, err := generator.New(generator.Config{RunID: r.ID, Seed: 42, Day: "2026-10-08", Events: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2, err := g.At(1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UnixMilli()
+	if _, err := s.DB.Admit(ctx, []store.Input{
+		{Event: e, Received: time.Now().Add(-time.Second).UnixMilli()},
+		{Event: e2, Received: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Finalize e (stand-in)
+	if _, err := s.DB.Finalize(ctx, []store.Choice{{ID: e.TransactionID}}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := invoke(s, http.MethodGet, "/v1/runs/"+r.ID+"/counts", nil, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var got auth.RunCounts
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := auth.RunCounts{RunID: r.ID, Admitted: 2, Final: 1, Pending: 1, StandIn: 1}
+	if got != want {
+		t.Fatalf("counts mismatch: got %+v, want %+v", got, want)
+	}
+}

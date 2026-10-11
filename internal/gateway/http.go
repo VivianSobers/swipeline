@@ -193,6 +193,17 @@ func (s *Service) Handler() http.Handler {
 		}
 		reply(w, http.StatusOK, run)
 	})
+	m.HandleFunc("GET /v1/runs/{id}/counts", func(w http.ResponseWriter, r *http.Request) {
+		counts, err := s.DB.Counts(r.Context(), r.PathValue("id"))
+		if errors.Is(err, sql.ErrNoRows) {
+			failure(w, http.StatusNotFound, "UNKNOWN_RUN")
+			return
+		} else if err != nil {
+			failure(w, http.StatusServiceUnavailable, "RETRY")
+			return
+		}
+		reply(w, http.StatusOK, counts)
+	})
 	m.HandleFunc("POST /v1/authorizations", s.authorize)
 	m.HandleFunc("GET /v1/authorizations/{id}", func(w http.ResponseWriter, r *http.Request) {
 		row, err := s.DB.Lookup(r.Context(), r.PathValue("id"))

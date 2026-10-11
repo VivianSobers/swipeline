@@ -106,6 +106,15 @@ type Run struct {
 	Partitions  int     `json:"partitions"`
 }
 
+// RunCounts summarizes gateway decision counts for a run.
+type RunCounts struct {
+	RunID    string `json:"run_id"`
+	Admitted int64  `json:"admitted"`
+	Final    int64  `json:"final"`
+	Pending  int64  `json:"pending"`
+	StandIn  int64  `json:"stand_in"`
+}
+
 func positive(f float64) bool { return f > 0 && !math.IsNaN(f) && !math.IsInf(f, 0) }
 
 // Validate checks the run's names, deadline mode, partitioning and rates.
