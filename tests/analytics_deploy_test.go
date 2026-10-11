@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -63,8 +64,26 @@ func TestRenderedPostgresInitCreatesAnalyticsDatabases(t *testing.T) {
 	}
 }
 
+func renderedFull(t *testing.T) map[string]service {
+	t.Helper()
+	path := os.Getenv("SWIPELINE_FULL_COMPOSE_JSON")
+	if path == "" {
+		return rendered(t)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Services map[string]service `json:"services"`
+	}
+	if err = json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	return doc.Services
+}
+
 func TestRenderedAnalyticsProfileTopology(t *testing.T) {
-	services := rendered(t)
 	profile := os.Getenv("COMPOSE_PROFILES")
 
 	druidServices := map[string]struct {
@@ -81,6 +100,7 @@ func TestRenderedAnalyticsProfileTopology(t *testing.T) {
 	}
 
 	if profile != "full" {
+		services := rendered(t)
 		for name := range druidServices {
 			if _, ok := services[name]; ok {
 				t.Fatalf("service %s rendered in default profile", name)
@@ -89,8 +109,9 @@ func TestRenderedAnalyticsProfileTopology(t *testing.T) {
 		return
 	}
 
+	services := renderedFull(t)
+
 	expectedMissing := map[string]bool{
-		"druid-zk":                   true,
 		"druid-coordinator-overlord": true,
 		"druid-broker":               true,
 		"druid-router":               true,

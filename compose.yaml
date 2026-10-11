@@ -229,6 +229,25 @@ services:
       options:
         max-size: 5m
         max-file: "2"
+  druid-zk:
+    profiles: [full]
+    image: zookeeper:3.9.6
+    mem_limit: 256m
+    environment:
+      ZOO_4LW_COMMANDS_WHITELIST: ruok
+      JVMFLAGS: "-Xms128m -Xmx128m"
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD-SHELL, "echo ruok | nc 127.0.0.1 2181 | grep imok"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: on-failure
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
 volumes:
   preview-data:
   prometheus-data:
