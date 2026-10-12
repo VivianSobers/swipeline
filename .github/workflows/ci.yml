@@ -2,6 +2,8 @@ name: preview checks
 on:
   push:
   pull_request:
+  workflow_dispatch:
+concurrency: {group: ${{ github.workflow }}-${{ github.ref }}, cancel-in-progress: true}
 permissions:
   contents: read
 jobs:
@@ -31,6 +33,7 @@ jobs:
       - name: Prove installed preview
         run: make demo
   storage:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -48,6 +51,7 @@ jobs:
         if: always()
         run: docker compose down -v --remove-orphans
   authorization:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     env:
       SWIPELINE_ENFORCE_BUDGETS: "0"
     runs-on: ubuntu-24.04
