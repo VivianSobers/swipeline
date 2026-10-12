@@ -42,7 +42,7 @@ COMPOSE_PROFILES=full docker compose -p "$project" up -d --build --wait postgres
 		rc=0
 		case "$action" in
 			restart-middlemanager)
-				COMPOSE_PROFILES=full docker compose -p "$project" restart druid-middlemanager && COMPOSE_PROFILES=full docker compose -p "$project" up -d --wait --wait-timeout 180 postgres kafka gateway replayer prometheus flink-jobmanager flink-taskmanager druid-zk druid-coordinator-overlord druid-broker druid-historical druid-middlemanager druid-router superset || rc=$?
+				COMPOSE_PROFILES=full docker compose -p "$project" restart druid-middlemanager && COMPOSE_PROFILES=full docker compose -p "$project" up -d --no-deps --wait --wait-timeout 180 druid-middlemanager || rc=$?
 				;;
 			*) rc=2 ;;
 		esac

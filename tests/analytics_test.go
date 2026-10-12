@@ -512,6 +512,14 @@ func TestInstalledAnalytics(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
+	t.Run("FreshnessAfterReplay", func(t *testing.T) {
+		lag, err := VerifyAnalyticsSnapshotReady(ctx, client, gatewayURL, runID, 30*time.Second)
+		if err != nil {
+			t.Fatalf("VerifyFreshnessAfterReplay failed: %v", err)
+		}
+		t.Logf("freshness lag=%.3fs (budget=30s)", lag)
+	})
+
 	t.Run("DruidDecisionFields", func(t *testing.T) {
 		if err := VerifyDruidDecisionFields(ctx, client, gatewayURL, runID); err != nil {
 			t.Fatalf("VerifyDruidDecisionFields failed: %v", err)
@@ -522,14 +530,6 @@ func TestInstalledAnalytics(t *testing.T) {
 		if err := VerifyDashboardChartsThroughSuperset(ctx, supersetURL, supersetPassword, gatewayURL, dbURL, runID); err != nil {
 			t.Fatalf("VerifyDashboardChartsThroughSuperset failed: %v", err)
 		}
-	})
-
-	t.Run("FreshnessAfterReplay", func(t *testing.T) {
-		lag, err := VerifyFreshnessAfterReplay(ctx, client, runID, 30.0, 60*time.Second)
-		if err != nil {
-			t.Fatalf("VerifyFreshnessAfterReplay failed: %v", err)
-		}
-		t.Logf("freshness lag=%.3fs (budget=30s)", lag)
 	})
 
 	faultDir := os.Getenv("SWIPELINE_FAULT_DIR")
@@ -758,4 +758,64 @@ func TestReconcileAfterIngestionRestartsUnit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on reconciliation inflation/duplicate rows, got nil")
 	}
+}
+
+func TestAnalyticsSnapshotReadiness(t *testing.T) {
+	for _, mode := range []string{"tail_pending", "duplicate_rows", "stale"} {
+		t.Run(mode, func(t *testing.T) {
+			countQueries := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if strings.Contains(r.URL.Path, "/counts") {
+					json.NewEncoder(w).Encode(auth.RunCounts{Final: 1000, Admitted: 1000})
+					return
+				}
+				var body struct {
+					Query string `json:"query"`
+				}
+				json.NewDecoder(r.Body).Decode(&body)
+				if strings.Contains(body.Query, "CURRENT_TIMESTAMP") {
+					lag := 1.0
+					if mode == "stale" {
+						lag = 40
+					}
+					json.NewEncoder(w).Encode([]map[string]any{{"ingestion_lag_seconds": lag}})
+					return
+				}
+				countQueries++
+				total, distinct := 1000, 1000
+				if mode == "tail_pending" && countQueries == 1 {
+					total, distinct = 962, 962
+				}
+				if mode == "duplicate_rows" {
+					total = 1001
+				}
+				json.NewEncoder(w).Encode([]map[string]any{{"total_count": total, "distinct_count": distinct}})
+			}))
+			defer srv.Close()
+			lag, err := VerifyAnalyticsSnapshotReady(context.Background(), druid.NewClient(srv.URL), srv.URL, "run", 100*time.Millisecond)
+			if mode == "tail_pending" {
+				if err != nil || lag != 1 || countQueries < 2 {
+					t.Fatalf("tail convergence lag%v queries%d error%v", lag, countQueries, err)
+				}
+			} else if err == nil {
+				t.Fatal("invalid snapshot readiness accepted")
+			}
+			if mode == "stale" && countQueries != 0 {
+				t.Fatal("stale snapshot must fail before exact count wait")
+			}
+		})
+	}
+}
+
+// Check the live freshness budget before waiting for exact tail convergence.
+func VerifyAnalyticsSnapshotReady(ctx context.Context, client *druid.Client, gatewayURL, runID string, wait time.Duration) (float64, error) {
+	lag, err := VerifyFreshnessAfterReplay(ctx, client, runID, 30, wait)
+	if err != nil {
+		return lag, err
+	}
+	if err = reconcile.Run(ctx, gatewayURL, client.Base, runID, wait, io.Discard); err != nil {
+		return lag, fmt.Errorf("analytics snapshot did not converge: %w", err)
+	}
+	return lag, nil
 }

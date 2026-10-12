@@ -216,3 +216,13 @@ func TestM3RunsScoredDetectorWithThroughputDeadlines(t *testing.T) {
 		}
 	}
 }
+
+func TestM3RestartsOnlyRequestedWorker(t *testing.T) {
+	data, err := os.ReadFile("m3-demo.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "up -d --no-deps --wait --wait-timeout 180 druid-middlemanager") {
+		t.Fatal("fault worker must await only restarted middlemanager without rerunning bootstrap")
+	}
+}
