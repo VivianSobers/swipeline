@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,9 +15,10 @@ import (
 )
 
 func TestDashboardUsesImportedStructuredCharts(t *testing.T) {
-	for _, failure := range []string{"", "missing context", "chart error", "missing chart", "invalid query", "missing datasource", "empty data", "wrong rate", "missing csrf"} {
+	for _, failure := range []string{"", "missing context", "chart error", "missing chart", "invalid query", "missing datasource", "empty data", "wrong rate", "missing csrf", "changed metrics", "changed columns", "changed orderby"} {
 		t.Run(failure, func(t *testing.T) {
 			var queried atomic.Int32
+			var savedContext atomic.Value
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
@@ -59,6 +61,7 @@ func TestDashboardUsesImportedStructuredCharts(t *testing.T) {
 						http.Error(w, "fixture encoding failed", 500)
 						return
 					}
+					savedContext.Store(string(qc))
 					if failure == "missing context" {
 						qc = []byte("null")
 					}
@@ -126,6 +129,13 @@ func TestDashboardUsesImportedStructuredCharts(t *testing.T) {
 						http.Error(w, "missing run filter", 400)
 						return
 					}
+					if strings.HasPrefix(failure, "changed ") {
+						q[strings.TrimPrefix(failure, "changed ")] = []any{"replacement"}
+					}
+					if err := verifySavedChartQueries(savedContext.Load().(string), queries, "installed-42"); err != nil {
+						http.Error(w, err.Error(), 400)
+						return
+					}
 					queried.Add(1)
 					status := "success"
 					if failure == "chart error" {
@@ -158,11 +168,36 @@ func TestDashboardUsesImportedStructuredCharts(t *testing.T) {
 					t.Fatalf("queried %d charts", count)
 				}
 			} else {
-				want := map[string]string{"missing context": "no valid saved query context", "chart error": "returned status", "missing chart": "dashboard missing chart", "invalid query": "invalid query in chart", "missing datasource": "no imported table datasource", "empty data": "no data", "wrong rate": "approval-rate mismatch", "missing csrf": "no CSRF token"}[failure]
+				want := map[string]string{"missing context": "no valid saved query context", "chart error": "returned status", "missing chart": "dashboard missing chart", "invalid query": "invalid query in chart", "missing datasource": "no imported table datasource", "empty data": "no data", "wrong rate": "approval-rate mismatch", "missing csrf": "no CSRF token", "changed metrics": "changed saved chart query", "changed columns": "changed saved chart query", "changed orderby": "changed saved chart query"}[failure]
 				if err == nil || !strings.Contains(err.Error(), want) {
 					t.Fatalf("expected %q failure, got %v", want, err)
 				}
 			}
 		})
 	}
+}
+
+// Compare the complete saved query, including metrics, columns, ordering and
+// limits. Only adding the run filter is allowed inside a query object.
+func verifySavedChartQueries(saved string, incoming []any, runID string) error {
+	var context map[string]any
+	if err := json.Unmarshal([]byte(saved), &context); err != nil {
+		return err
+	}
+	expected, ok := context["queries"].([]any)
+	if !ok {
+		return fmt.Errorf("saved query missing")
+	}
+	for _, raw := range expected {
+		query, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("saved query invalid")
+		}
+		filters, _ := query["filters"].([]any)
+		query["filters"] = append(filters, map[string]any{"col": "run_id", "op": "==", "val": runID})
+	}
+	if !reflect.DeepEqual(expected, incoming) {
+		return fmt.Errorf("changed saved chart query")
+	}
+	return nil
 }
