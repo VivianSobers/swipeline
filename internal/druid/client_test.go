@@ -239,3 +239,23 @@ func TestDecisionCountsPreservesIntegerPrecision(t *testing.T) {
 		t.Fatalf("lost exact count: %+v, %v", counts, err)
 	}
 }
+
+func TestDecisionCountsReturnsNotReadyOnNull(t *testing.T) {
+	for _, response := range []string{
+		`[{"total_count":null,"distinct_count":null}]`,
+		`[{"total_count":null,"distinct_count":10}]`,
+		`[{"total_count":10,"distinct_count":null}]`,
+	} {
+		t.Run(response, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, response)
+			}))
+			defer server.Close()
+
+			_, err := NewClient(server.URL).DecisionCounts(context.Background(), "run-1")
+			if !errors.Is(err, ErrNotReady) {
+				t.Fatalf("expected ErrNotReady, got: %v", err)
+			}
+		})
+	}
+}

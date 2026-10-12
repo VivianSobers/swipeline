@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"github.com/VivianSobers/swipeline/internal/auth"
 	"github.com/VivianSobers/swipeline/internal/druid"
 )
+
+var ErrNotReady = druid.ErrNotReady
 
 type GatewayCounts = auth.RunCounts
 type DruidCounts = druid.DecisionCounts
@@ -43,9 +46,16 @@ func Run(ctx context.Context, gatewayURL, druidURL, runID string, wait time.Dura
 	druidClient := druid.NewClient(druidURL)
 
 	var lastRes Result
+	var lastErr error
 	for {
 		select {
 		case <-ctx.Done():
+			if errors.Is(lastErr, druid.ErrNotReady) {
+				return fmt.Errorf("reconciliation failed: druid counts not ready: %w", ctx.Err())
+			}
+			if lastRes.Gateway != 0 || lastRes.Druid != 0 {
+				return fmt.Errorf("reconciliation failed: gateway=%d druid=%d: %w", lastRes.Gateway, lastRes.Druid, ctx.Err())
+			}
 			return ctx.Err()
 		default:
 		}
@@ -79,8 +89,18 @@ func Run(ctx context.Context, gatewayURL, druidURL, runID string, wait time.Dura
 		// 2. Query Druid counts
 		d, err := druidClient.DecisionCounts(ctx, runID)
 		if err != nil {
+			if errors.Is(err, druid.ErrNotReady) {
+				lastErr = err
+				select {
+				case <-ctx.Done():
+					return fmt.Errorf("reconciliation failed: druid counts not ready: %w", ctx.Err())
+				case <-time.After(50 * time.Millisecond):
+					continue
+				}
+			}
 			return fmt.Errorf("failed to query druid counts: %w", err)
 		}
+		lastErr = nil
 
 		// Check for duplicate rows
 		if d.Count > d.Distinct {

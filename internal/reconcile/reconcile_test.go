@@ -228,3 +228,72 @@ func TestReconcileRejectsInvalidGatewayCounts(t *testing.T) {
 		})
 	}
 }
+
+func TestReconcileRetriesNullDruidCounts(t *testing.T) {
+	gwSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(auth.RunCounts{
+			RunID:    "run-1",
+			Admitted: 100,
+			Final:    100,
+			Pending:  0,
+		})
+	}))
+	defer gwSrv.Close()
+
+	var pollCount atomic.Int32
+	druidSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cnt := pollCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if cnt < 3 {
+			fmt.Fprint(w, `[{"total_count":null,"distinct_count":null}]`)
+			return
+		}
+		fmt.Fprint(w, `[{"total_count":100,"distinct_count":100}]`)
+	}))
+	defer druidSrv.Close()
+
+	var buf bytes.Buffer
+	err := Run(context.Background(), gwSrv.URL, druidSrv.URL, "run-1", 2*time.Second, &buf)
+	if err != nil {
+		t.Fatalf("expected success after null counts retry, got error: %v", err)
+	}
+	var res Result
+	if err := json.Unmarshal(buf.Bytes(), &res); err != nil {
+		t.Fatalf("invalid json output: %s", buf.String())
+	}
+	if !res.Equal || res.Gateway != 100 || res.Druid != 100 {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if pollCount.Load() < 3 {
+		t.Fatalf("expected at least 3 polls, got %d", pollCount.Load())
+	}
+}
+
+func TestReconcileNullDruidCountsFailsAtDeadline(t *testing.T) {
+	gwSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(auth.RunCounts{
+			RunID:    "run-1",
+			Admitted: 100,
+			Final:    100,
+			Pending:  0,
+		})
+	}))
+	defer gwSrv.Close()
+
+	druidSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"total_count":null,"distinct_count":null}]`)
+	}))
+	defer druidSrv.Close()
+
+	var buf bytes.Buffer
+	err := Run(context.Background(), gwSrv.URL, druidSrv.URL, "run-1", 100*time.Millisecond, &buf)
+	if err == nil {
+		t.Fatal("expected deadline error when counts never leave null, got nil")
+	}
+	if !strings.Contains(err.Error(), "druid counts not ready") {
+		t.Fatalf("expected error mentioning druid counts not ready, got: %v", err)
+	}
+}

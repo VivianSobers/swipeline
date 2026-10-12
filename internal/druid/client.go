@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-var ErrSpecConflict = errors.New("druid supervisor spec conflict")
+var (
+	ErrSpecConflict = errors.New("druid supervisor spec conflict")
+	ErrNotReady     = errors.New("druid decision counts not ready")
+)
 
 type Client struct {
 	Base string
@@ -289,9 +292,15 @@ func (c *Client) DecisionCounts(ctx context.Context, runID string) (DecisionCoun
 	}
 	var res DecisionCounts
 	found := map[string]bool{}
+	var hasNull bool
 	for k, v := range rows[0] {
 		key := strings.ToLower(k)
 		if key != "total_count" && key != "distinct_count" {
+			continue
+		}
+		if v == nil {
+			hasNull = true
+			found[key] = true
 			continue
 		}
 		number, ok := v.(json.Number)
@@ -309,7 +318,13 @@ func (c *Client) DecisionCounts(ctx context.Context, runID string) (DecisionCoun
 			res.Distinct = n
 		}
 	}
-	if !found["total_count"] || !found["distinct_count"] || res.Distinct > res.Count {
+	if !found["total_count"] || !found["distinct_count"] {
+		return DecisionCounts{}, fmt.Errorf("invalid decision count row: %v", rows[0])
+	}
+	if hasNull {
+		return DecisionCounts{}, ErrNotReady
+	}
+	if res.Distinct > res.Count {
 		return DecisionCounts{}, fmt.Errorf("invalid decision count row: %v", rows[0])
 	}
 	return res, nil
