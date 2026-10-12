@@ -139,3 +139,79 @@ esac
 		assertOrderAndFullLog(t, output, invocations)
 	})
 }
+
+// Exercise the real shell flow while replacing container execution and Go tests.
+func TestAuthorizationFailureLogsBeforeRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		auth, recovery, canonical string
+		wantDumps                 int
+		wantFailure               bool
+	}{
+		{"authorization", "1", "0", "0", 1, true},
+		{"recovery", "0", "1", "0", 1, true},
+		{"both", "1", "1", "0", 2, true},
+		{"canonical", "0", "0", "1", 1, true},
+		{"authorization-and-canonical", "1", "0", "1", 2, true},
+		{"success", "0", "0", "0", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			stubs := map[string]string{
+				"docker": `#!/bin/sh
+case "$1" in
+ run)
+  while [ "$1" != "sh" ]; do shift; done
+  exec "$@"
+  ;;
+ compose)
+  case "$*" in
+   *"config --services"*) printf 'gateway\npostgres\nflink-jobmanager\n' ;;
+   *"logs --no-color gateway"*) echo gateway-dump ;;
+  esac
+  ;;
+esac
+`,
+				"go": `#!/bin/sh
+echo "test invocation: $*"
+case "$*" in
+ *TestInstalledAuthorization*) echo authorization; exit "$AUTH_STATUS" ;;
+ *TestLateProposalAfterStandIn*TestGatewayRestartRecovers*) echo recovery; exit "$RECOVERY_STATUS" ;;
+ *TestCanonical*) echo canonical; exit "$CANONICAL_STATUS" ;;
+ *) exit 99 ;;
+esac
+`,
+			}
+			for name, content := range stubs {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command("sh", "m2-demo.sh")
+			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"),
+				"AUTH_STATUS="+tc.auth, "RECOVERY_STATUS="+tc.recovery, "CANONICAL_STATUS="+tc.canonical)
+			out, err := cmd.CombinedOutput()
+			output := string(out)
+			if (err != nil) != tc.wantFailure {
+				t.Errorf("exit error=%v, want failure=%t\n%s", err, tc.wantFailure, output)
+			}
+			auth := strings.Index(output, "\nauthorization\n")
+			recovery := strings.Index(output, "\nrecovery\n")
+			if auth < 0 || recovery <= auth {
+				t.Errorf("authorization must run before a separate recovery invocation:\n%s", output)
+			}
+			if tc.auth == "1" {
+				dump := strings.Index(output, "gateway-dump")
+				if dump <= auth || dump >= recovery {
+					t.Errorf("authorization logs must precede recovery:\n%s", output)
+				}
+			}
+			if got := strings.Count(output, "gateway-dump"); got != tc.wantDumps {
+				t.Errorf("log dumps=%d, want %d:\n%s", got, tc.wantDumps, output)
+			}
+			if tc.recovery == "0" && !strings.Contains(output, "\ncanonical\n") {
+				t.Errorf("canonical test run missing:\n%s", output)
+			}
+		})
+	}
+}

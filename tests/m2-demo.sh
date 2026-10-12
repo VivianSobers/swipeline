@@ -5,11 +5,12 @@ export SWIPELINE_HTTP_PORT=0 SWIPELINE_PROM_PORT=0 SWIPELINE_GATEWAY_PORT=0 SWIP
 . "$(dirname "$0")/dump-logs.sh"
 work=$(mktemp -d)
 worker=
+dump_on_failure=1
 cleanup() {
  rc=$?
  trap - EXIT
  if [ -n "$worker" ]; then kill "$worker" 2>/dev/null || true; wait "$worker" 2>/dev/null || true; fi
- if [ "$rc" -ne 0 ]; then dump_logs "$project"; fi
+ if [ "$rc" -ne 0 ] && [ "$dump_on_failure" -eq 1 ]; then dump_logs "$project"; fi
  docker compose -p "$project" down -v --remove-orphans
  rm -rf "$work"
  exit "$rc"
@@ -44,11 +45,25 @@ ready
  done
 ) &
 worker=$!
+run_tests() {
 docker run --rm --memory=768m --cpus=2 --network "${project}_default" --user "$(id -u):$(id -g)" \
  -e SWIPELINE_ENFORCE_BUDGETS="${SWIPELINE_ENFORCE_BUDGETS:-1}" -e GOMEMLIMIT=512MiB -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false \
  -e SWIPELINE_TEST_DB=postgres://gateway:gateway-local@postgres:5432/gateway?sslmode=disable -e SWIPELINE_TEST_GATEWAY=http://gateway:8081 -e SWIPELINE_KAFKA=kafka:9092 -e SWIPELINE_FLINK=http://flink-jobmanager:8081 -e SWIPELINE_FAULT_DIR=/faults \
  -v "$PWD:/src:ro,z" -v "$work:/faults:z" -w /src golang:1.27.2 \
- sh -ec '
-  go test ./tests -run '\''^(TestInstalledAuthorization|TestLateProposalAfterStandIn|TestGatewayRestartRecovers)$'\'' -count=1 -v
+ sh -ec "$1"
+}
+status=0
+if ! run_tests 'go test ./tests -run '\''^TestInstalledAuthorization$'\'' -count=1 -v'; then
+ dump_logs "$project"
+ status=1
+fi
+if run_tests '
+  go test ./tests -run '\''^(TestLateProposalAfterStandIn|TestGatewayRestartRecovers)$'\'' -count=1 -v
   go test ./tests -run '\''^TestCanonical'\'' -count=1 -v
- '
+ '; then
+ # Any authorization failure was already logged before recovery changed containers.
+ dump_on_failure=0
+else
+ status=1
+fi
+exit "$status"
