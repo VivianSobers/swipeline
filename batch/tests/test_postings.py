@@ -140,8 +140,8 @@ class TestPostingsFee(unittest.TestCase):
             "acquirer_bank_id": "bank-acq",
             "currency": "USD",
             "signed_principal": 5000,
-            "signed_interchange": 80,  # custom/override fee preserved
-            "fee_schedule_version": "custom-v0",
+            "signed_interchange": 75,  # canonical 150 bps fee
+            "fee_schedule_version": "150bps-v1",
             "original_business_date": "2026-10-10",
             "posting_date": "2026-10-10",
             "adjustment_reason": None,
@@ -169,11 +169,11 @@ class TestPostingsFee(unittest.TestCase):
         # Existing CLEAR must preserve original batch_id, posting_date, fee schedule, and fee
         self.assertEqual(p_clear["batch_id"], "batch-initial")
         self.assertEqual(p_clear["posting_date"], "2026-10-10")
-        self.assertEqual(p_clear["signed_interchange"], 80)
-        self.assertEqual(p_clear["fee_schedule_version"], "custom-v0")
+        self.assertEqual(p_clear["signed_interchange"], 75)
+        self.assertEqual(p_clear["fee_schedule_version"], "150bps-v1")
 
-        # Reversal cancels the preserved clear fee (-80)
-        self.assertEqual(p_rev["signed_interchange"], -80)
+        # Reversal cancels the verified canonical fee (-75)
+        self.assertEqual(p_rev["signed_interchange"], -75)
         self.assertEqual(p_rev["batch_id"], "batch-second")
         self.assertEqual(p_rev["posting_date"], "2026-10-12")
 
@@ -226,3 +226,37 @@ if __name__ == "__main__":
     unittest.main()
 
 
+
+class ExistingPostingIntegrityTests(unittest.TestCase):
+    def fixture(self):
+        from batch.postings import reconstruct_postings
+        tx = {'transaction_id': 'tx', 'run_id': 'run', 'issuer_bank_id': 'iss', 'acquirer_bank_id': 'acq', 'currency': 'USD', 'authorized_amount': 100, 'cleared_amount': 100, 'authorization_date': '2026-10-11'}
+        events = [{'event_id': 'clear', 'logical_seq': 2, 'event_type': 'CLEAR'}, {'event_id': 'reverse', 'logical_seq': 3, 'event_type': 'REVERSE'}]
+        postings = reconstruct_postings(tx, events, {}, 'first', '2026-10-11')
+        return tx, events, {p['posting_id']: p for p in postings}
+
+    def test_existing_immutable_content_fails_closed(self):
+        from batch.postings import reconstruct_postings
+        for field, bad in [('signed_principal', 999), ('signed_interchange', 15), ('event_id', 'other'), ('currency', 'EUR'), ('fee_schedule_version', 'wrong'), ('adjustment_reason', 'wrong')]:
+            for index in (0, 1):
+                with self.subTest(field=field, index=index):
+                    tx, events, existing = self.fixture()
+                    list(existing.values())[index][field] = bad
+                    with self.assertRaisesRegex(RuntimeError, 'posting'):
+                        reconstruct_postings(tx, events, existing, 'retry', '2026-10-12')
+
+    def test_correct_retry_preserves_dates_and_batch_assignments(self):
+        from batch.postings import reconstruct_postings
+        tx, events, existing = self.fixture()
+        retry = reconstruct_postings(tx, events, existing, 'retry', '2026-10-12')
+        self.assertEqual(retry, list(existing.values()))
+        self.assertEqual(sum(p['signed_principal'] for p in retry), 0)
+        self.assertEqual(sum(p['signed_interchange'] for p in retry), 0)
+
+    def test_unexpected_existing_posting_fails_closed(self):
+        from batch.postings import reconstruct_postings
+        tx, events, existing = self.fixture()
+        wrong = dict(next(iter(existing.values())), posting_id='unexpected', event_id='unexpected')
+        existing['unexpected'] = wrong
+        with self.assertRaisesRegex(RuntimeError, 'posting'):
+            reconstruct_postings(tx, events, existing, 'retry', '2026-10-12')

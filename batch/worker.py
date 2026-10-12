@@ -21,7 +21,7 @@ try:
     )
     from batch.journal import ingest_journal, parse_event_envelope
     from batch.kafka_consumer import read_kafka_range
-    from batch.postings import reconstruct_postings, upsert_postings
+    from batch.postings import reconstruct_postings, upsert_postings, validate_existing_posting, derive_posting_id
     from batch.reducer import TransactionReducer, upsert_transactions
 except ImportError:
     # Allow imports without pyspark installed in lightweight environments
@@ -174,7 +174,9 @@ def process_postings(
     postings_table = table_path or TABLE_SETTLEMENT_POSTINGS
     existing_postings = {}
 
-    existing_postings = read_snapshot(spark, postings_table, set(tx_states), "posting_id")
+    expected_ids = {derive_posting_id(e["event_id"]) for chain in events_by_tx.values() for e in chain
+                    if e.get("event_type") in ("CLEAR", "REVERSE", "CHARGEBACK")}
+    existing_postings = read_snapshot(spark, postings_table, set(tx_states), "posting_id", record_ids=expected_ids)
 
     all_postings = []
     for tid, tx in tx_states.items():
@@ -184,6 +186,16 @@ def process_postings(
         }
         reconstructed = reconstruct_postings(tx, evts, tx_existing, batch_id, close_day)
         all_postings.extend(reconstructed)
+
+    actual_ids = {p["posting_id"] for p in all_postings}
+    if tx_states and any(pid not in actual_ids for pid in existing_postings):
+        raise RuntimeError("Unexpected persisted posting outside accepted chain")
+
+    # Check globally as well: a corrupt transaction_id must not evade the
+    # per-transaction subset and then get skipped solely by deterministic ID.
+    for posting in all_postings:
+        if posting["posting_id"] in existing_postings:
+            validate_existing_posting(posting, existing_postings[posting["posting_id"]])
 
     # Exclude postings that already existed prior to this run
     new_postings = [p for p in all_postings if p["posting_id"] not in existing_postings]
@@ -224,14 +236,17 @@ def process_postings(
     return upsert_postings(spark, postings_df, table_path=postings_table)
 
 
-def read_snapshot(spark, path, tx_ids, key):
+def read_snapshot(spark, path, tx_ids, key, record_ids=None):
     """Read a verified snapshot; an inaccessible table is never treated as absent."""
     if not is_hudi_table(spark, path):
         return {}
     from pyspark.sql.functions import col
     frame = spark.read.format("hudi").load(path)
     if tx_ids:
-        frame = frame.filter(col("transaction_id").isin(list(tx_ids)))
+        predicate = col("transaction_id").isin(list(tx_ids))
+        if record_ids:
+            predicate = predicate | col(key).isin(list(record_ids))
+        frame = frame.filter(predicate)
     rows = [row.asDict(recursive=True) for row in frame.collect()]
     result = {}
     for row in rows:

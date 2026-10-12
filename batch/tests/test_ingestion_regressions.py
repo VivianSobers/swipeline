@@ -333,3 +333,31 @@ class CanonicalDecisionIdentityTests(unittest.TestCase):
         from batch.journal import parse_event_envelope
         parsed = parse_event_envelope({'event_id': 'request-id', 'decision_id': 'decision-id', 'decision': 'APPROVE', 'transaction_id': 'tx', 'run_id': 'run', 'source_seq': 0, 'event_time_ms': 1, 'amount_minor': 100, 'payload_hash': 'hash'})
         self.assertEqual(parsed['event_id'], 'request-id')
+
+class PersistedPostingWorkerIntegrityTests(unittest.TestCase):
+    def test_wrong_transaction_cannot_skip_global_posting_check(self):
+        from batch.postings import reconstruct_postings
+        auth, clear, _ = fixtures()
+        state, accepted = TransactionReducer().reduce_transaction(None, list(map(parse_event_envelope, (auth, clear))))
+        posting = reconstruct_postings(state, accepted, {}, 'first', '2026-10-11')[0]
+        posting['transaction_id'] = 'wrong-transaction'
+        with patch('batch.worker.read_snapshot', return_value={posting['posting_id']: posting}), patch('batch.worker.upsert_postings') as write:
+            with self.assertRaisesRegex(RuntimeError, 'posting'):
+                process_postings(MagicMock(), {state['transaction_id']: state}, {state['transaction_id']: accepted}, 'retry', '2026-10-12')
+            write.assert_not_called()
+
+    def test_corrupt_posting_keeps_batch_incomplete(self):
+        from batch.postings import reconstruct_postings
+        from batch.worker import run_batch
+        auth, clear, _ = fixtures()
+        parsed = list(map(parse_event_envelope, (auth, clear)))
+        state, accepted = TransactionReducer().reduce_transaction(None, parsed)
+        posting = reconstruct_postings(state, accepted, {}, 'first', '2026-10-11')[0]
+        posting['signed_principal'] = 999
+        coordinator = MagicMock()
+        coordinator.get_pending_batch.return_value = None
+        with patch('batch.worker.read_kafka_range'), patch('batch.worker._parse_records', return_value=parsed), patch('batch.worker.ingest_journal', return_value='journal'), patch('batch.worker.reconstruct_transaction_chains', return_value=({state['transaction_id']: state}, {state['transaction_id']: accepted})), patch('batch.worker.process_transactions', return_value='transactions'), patch('batch.worker.read_snapshot', return_value={posting['posting_id']: posting}):
+            with self.assertRaisesRegex(RuntimeError, 'posting'):
+                run_batch(MagicMock(), coordinator, start_offsets={'topic': {'0': 0}}, end_offsets={'topic': {'0': 2}})
+        coordinator.complete_batch.assert_not_called()
+        coordinator.release_advisory_lock.assert_called_once_with(72002)
