@@ -34,9 +34,13 @@ func Compare(ctx context.Context, gw GatewayCounts, d DruidCounts) Result {
 }
 
 func Run(ctx context.Context, gatewayURL, druidURL, runID string, wait time.Duration, out io.Writer) error {
+	if wait <= 0 {
+		return fmt.Errorf("wait must be positive")
+	}
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
 	client := &http.Client{Timeout: 10 * time.Second}
 	druidClient := druid.NewClient(druidURL)
-	deadline := time.Now().Add(wait)
 
 	var lastRes Result
 	for {
@@ -68,6 +72,10 @@ func Run(ctx context.Context, gatewayURL, druidURL, runID string, wait time.Dura
 			return fmt.Errorf("failed to decode gateway counts: %w", err)
 		}
 
+		if gw.RunID != runID || gw.Admitted < 0 || gw.Final < 0 || gw.Final > gw.Admitted || gw.Pending != gw.Admitted-gw.Final || gw.StandIn < 0 || gw.StandIn > gw.Final {
+			return fmt.Errorf("invalid gateway counts for %s: %+v", runID, gw)
+		}
+
 		// 2. Query Druid counts
 		d, err := druidClient.DecisionCounts(ctx, runID)
 		if err != nil {
@@ -87,11 +95,10 @@ func Run(ctx context.Context, gatewayURL, druidURL, runID string, wait time.Dura
 			return nil
 		}
 
-		if time.Now().After(deadline) {
-			break
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("reconciliation failed: gateway=%d druid=%d: %w", lastRes.Gateway, lastRes.Druid, ctx.Err())
+		case <-time.After(50 * time.Millisecond):
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
-
-	return fmt.Errorf("reconciliation failed: gateway=%d druid=%d", lastRes.Gateway, lastRes.Druid)
 }

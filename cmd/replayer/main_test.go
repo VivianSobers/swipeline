@@ -332,3 +332,20 @@ func TestInspectCLI(t *testing.T) {
 		t.Fatalf("expected output to contain CLEARED, got: %s", out.String())
 	}
 }
+
+func TestReconcileUsesGatewayEnvironment(t *testing.T) {
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/runs/run-cli/counts" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"run_id":"run-cli","admitted":1,"final":1}`)
+	}))
+	defer gateway.Close()
+	druid := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `[{"total_count":1,"distinct_count":1}]`) }))
+	defer druid.Close()
+	t.Setenv("SWIPELINE_GATEWAY_URL", gateway.URL)
+	var out, errs bytes.Buffer
+	if err := run(context.Background(), []string{"reconcile", "--run-id", "run-cli", "--druid", druid.URL}, &out, &errs); err != nil {
+		t.Fatal(err)
+	}
+}

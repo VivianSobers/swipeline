@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -177,5 +178,53 @@ func TestReconcileNeverEqual(t *testing.T) {
 	errStr := err.Error()
 	if !strings.Contains(errStr, "100") || !strings.Contains(errStr, "80") {
 		t.Fatalf("expected error to contain both gateway (100) and druid (80) numbers, got: %s", errStr)
+	}
+}
+
+func TestWaitBoundsSlowHTTP(t *testing.T) {
+	for _, slow := range []string{"gateway", "druid"} {
+		t.Run(slow, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gateway := strings.HasSuffix(r.URL.Path, "/counts")
+				if (gateway && slow == "gateway") || (!gateway && slow == "druid") {
+					select {
+					case <-r.Context().Done():
+						return
+					case <-time.After(400 * time.Millisecond):
+					}
+				}
+				if gateway {
+					fmt.Fprint(w, `{"run_id":"run-1","admitted":1,"final":1}`)
+				} else {
+					fmt.Fprint(w, `[{"total_count":1,"distinct_count":1}]`)
+				}
+			}))
+			defer server.Close()
+			started := time.Now()
+			var out bytes.Buffer
+			err := Run(context.Background(), server.URL, server.URL, "run-1", 30*time.Millisecond, &out)
+			if err == nil || time.Since(started) > 300*time.Millisecond || out.Len() != 0 {
+				t.Fatalf("wait not enforced: elapsed=%v error=%v output=%s", time.Since(started), err, &out)
+			}
+		})
+	}
+}
+
+func TestReconcileRejectsInvalidGatewayCounts(t *testing.T) {
+	for _, response := range []string{`{}`, `{"run_id":"other","admitted":0,"final":0,"pending":0}`, `{"run_id":"run-1","admitted":2,"final":0,"pending":0}`, `{"run_id":"run-1","admitted":0,"final":0,"pending":0,"stand_in":1}`} {
+		t.Run(response, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/counts") {
+					fmt.Fprint(w, response)
+				} else {
+					fmt.Fprint(w, `[{"total_count":0,"distinct_count":0}]`)
+				}
+			}))
+			defer server.Close()
+			var out bytes.Buffer
+			if err := Run(context.Background(), server.URL, server.URL, "run-1", time.Second, &out); err == nil {
+				t.Fatalf("invalid gateway counts reported as reconciled: %s", &out)
+			}
+		})
 	}
 }

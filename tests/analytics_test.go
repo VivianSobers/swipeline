@@ -767,7 +767,7 @@ func TestAnalyticsSnapshotReadiness(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				if strings.Contains(r.URL.Path, "/counts") {
-					json.NewEncoder(w).Encode(auth.RunCounts{Final: 1000, Admitted: 1000})
+					json.NewEncoder(w).Encode(auth.RunCounts{RunID: "run", Final: 1000, Admitted: 1000})
 					return
 				}
 				var body struct {

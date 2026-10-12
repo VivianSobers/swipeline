@@ -268,7 +268,11 @@ func run(ctx context.Context, args []string, out, errs io.Writer) error {
 		flags := flag.NewFlagSet("reconcile", flag.ContinueOnError)
 		flags.SetOutput(errs)
 		runID := flags.String("run-id", "", "run ID to reconcile")
-		gatewayURL := flags.String("gateway", "http://127.0.0.1:8080", "Gateway URL")
+		defaultGateway := os.Getenv("SWIPELINE_GATEWAY_URL")
+		if defaultGateway == "" {
+			defaultGateway = "http://127.0.0.1:8081"
+		}
+		gatewayURL := flags.String("gateway", defaultGateway, "Gateway URL")
 		druidURL := flags.String("druid", "http://druid-router:8888", "Druid router URL")
 		waitDuration := flags.Duration("wait", 2*time.Minute, "maximum wait duration for reconciliation")
 		if err := flags.Parse(args[1:]); err != nil {
