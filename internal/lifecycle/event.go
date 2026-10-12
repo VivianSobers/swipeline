@@ -156,6 +156,10 @@ func (e Event) Validate() error {
 	if e.Kind != string(KindClear) && e.Kind != string(KindReverse) && e.Kind != string(KindChargeback) {
 		return errors.New("invalid lifecycle kind")
 	}
+	if (e.Kind == string(KindClear) && e.LifecycleSeq != 2) ||
+		(e.Kind == string(KindChargeback) && e.LifecycleSeq != 3) {
+		return errors.New("invalid lifecycle kind and sequence")
+	}
 	for _, s := range []string{e.RunID, e.MerchantID, e.IssuerBankID, e.AcquirerBankID, e.ReferenceVersion} {
 		if !contract.ValidName(s) {
 			return errors.New("invalid business identifier")

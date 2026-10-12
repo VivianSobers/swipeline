@@ -273,3 +273,84 @@ func TestLifecycleConflictingSlotsAndDeferredParent(t *testing.T) {
 		})
 	}
 }
+
+func TestLifecycleInvalidEventsDoNotReserveSlots(t *testing.T) {
+	for _, c := range []struct {
+		name, kind  string
+		seq         int
+		wrongParent bool
+		validKind   string
+		validSeq    int
+	}{
+		{"clear_three", "CLEAR", 3, false, "CHARGEBACK", 3},
+		{"chargeback_two", "CHARGEBACK", 2, false, "CLEAR", 2},
+		{"wrong_clear_parent", "CLEAR", 2, true, "CLEAR", 2},
+		{"wrong_reverse_parent", "REVERSE", 2, true, "REVERSE", 2},
+		{"wrong_terminal_parent", "CHARGEBACK", 3, true, "CHARGEBACK", 3},
+		{"wrong_run", "CLEAR", 2, false, "CLEAR", 2},
+		{"wrong_merchant", "CLEAR", 2, false, "CLEAR", 2},
+		{"wrong_reference", "CLEAR", 2, false, "CLEAR", 2},
+		{"wrong_authorization_date", "CLEAR", 2, false, "CLEAR", 2},
+		{"wrong_source_seq", "CLEAR", 2, false, "CLEAR", 2},
+		{"wrong_epoch", "CLEAR", 2, false, "CLEAR", 2},
+		{"wrong_close_day", "CLEAR", 2, false, "CLEAR", 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := database(t)
+			_, e := fixture(t, s)
+			ctx := context.Background()
+			now := time.Now().UnixMilli()
+			rows, err := s.Admit(ctx, []Input{{Event: e, Received: now}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := rows[0].Request
+			_, err = s.Finalize(ctx, []Choice{{ID: e.TransactionID, Proposal: &auth.Proposal{Request: req, ProposalID: contract.ID(e.TransactionID, "prop"), Decision: "APPROVE", Reason: "OK", Flags: []string{}, Score: 10}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			parent := e.EventID
+			if c.validSeq == 3 {
+				parent = contract.ID(e.TransactionID, "CLEAR", "2")
+			}
+			valid, err := lifecycle.New(e.RunID, e.TransactionID, e.SourceSeq, c.validSeq, c.validKind, parent, now+1000, now, e.AuthorizationDate, e.Currency, e.AmountMinor, e.MerchantID, e.IssuerBankID, e.AcquirerBankID, e.ReferenceVersion, req.Epoch, req.CloseDay)
+			if err != nil {
+				t.Fatal(err)
+			}
+			invalid := valid
+			invalid.Kind = c.kind
+			invalid.LifecycleSeq = c.seq
+			if c.wrongParent {
+				invalid.ParentEventID = contract.ID("wrong-parent")
+			}
+			switch c.name {
+			case "wrong_run":
+				invalid.RunID = "wrong-run"
+			case "wrong_merchant":
+				invalid.MerchantID = "wrong-merchant"
+			case "wrong_reference":
+				invalid.ReferenceVersion = "wrong-reference"
+			case "wrong_authorization_date":
+				invalid.AuthorizationDate = "2026-10-09"
+			case "wrong_source_seq":
+				invalid.SourceSeq++
+			case "wrong_epoch":
+				invalid.SealEpoch++
+			case "wrong_close_day":
+				invalid.CloseDay = "2026-10-09"
+			}
+			invalid.EventID = contract.ID(e.TransactionID, invalid.Kind, fmt.Sprint(invalid.LifecycleSeq))
+			invalid.PayloadHash = fmt.Sprintf("%x", sha256.Sum256(lifecycle.Canonical(invalid)))
+			if _, err = s.ReceiveLifecycle(ctx, invalid); err == nil {
+				t.Fatal("invalid event admitted and reserved slot")
+			}
+			if _, err = s.ReceiveLifecycle(ctx, valid); err != nil {
+				t.Fatalf("valid event poisoned by invalid admission: %v", err)
+			}
+			var count int
+			if err = s.DB.QueryRowContext(ctx, "SELECT count(*) FROM lifecycle_receipts WHERE transaction_id=$1", e.TransactionID).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("receipts %d %v", count, err)
+			}
+		})
+	}
+}

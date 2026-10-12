@@ -407,20 +407,40 @@ func (s *Store) ReceiveLifecycle(ctx context.Context, e lifecycle.Event) (lifecy
 		return lifecycle.Receipt{}, ErrDeclinedLifecycle
 	}
 
-	// 3. Verify amount, currency, and bank IDs match authorization.
+	// 3. Verify immutable business identity and admission metadata.
 	var reqObj struct {
-		RunID          string `json:"run_id"`
-		CardToken      string `json:"card_token"`
-		Currency       string `json:"currency"`
-		AmountMinor    int64  `json:"amount_minor"`
-		IssuerBankID   string `json:"issuer_bank_id"`
-		AcquirerBankID string `json:"acquirer_bank_id"`
+		EventID           string `json:"event_id"`
+		RunID             string `json:"run_id"`
+		CardToken         string `json:"card_token"`
+		SourceSeq         int64  `json:"source_seq"`
+		MerchantID        string `json:"merchant_id"`
+		ReferenceVersion  string `json:"reference_version"`
+		AuthorizationDate string `json:"authorization_date"`
+		Currency          string `json:"currency"`
+		AmountMinor       int64  `json:"amount_minor"`
+		IssuerBankID      string `json:"issuer_bank_id"`
+		AcquirerBankID    string `json:"acquirer_bank_id"`
 	}
 	if err = json.Unmarshal(requestJSONRaw, &reqObj); err != nil {
 		return lifecycle.Receipt{}, fmt.Errorf("decode request_json: %w", err)
 	}
 	if reqObj.AmountMinor != e.AmountMinor || reqObj.Currency != e.Currency ||
 		reqObj.IssuerBankID != e.IssuerBankID || reqObj.AcquirerBankID != e.AcquirerBankID {
+		return lifecycle.Receipt{}, ErrLifecycleMismatch
+	}
+	if e.RunID != reqObj.RunID || e.SourceSeq != reqObj.SourceSeq ||
+		e.MerchantID != reqObj.MerchantID || e.ReferenceVersion != reqObj.ReferenceVersion ||
+		e.AuthorizationDate != reqObj.AuthorizationDate || e.SealEpoch != authSealEpoch ||
+		e.CloseDay != authCloseDay {
+		return lifecycle.Receipt{}, ErrLifecycleMismatch
+	}
+
+	// Validate the canonical parent identity before a receipt can reserve a slot.
+	parent := reqObj.EventID
+	if e.LifecycleSeq == 3 {
+		parent = contract.ID(e.TransactionID, string(lifecycle.KindClear), "2")
+	}
+	if e.ParentEventID != parent {
 		return lifecycle.Receipt{}, ErrLifecycleMismatch
 	}
 
