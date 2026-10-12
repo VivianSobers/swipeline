@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/VivianSobers/swipeline/internal/auth"
 	"github.com/VivianSobers/swipeline/internal/contract"
@@ -445,6 +446,22 @@ func (s *Store) ReceiveLifecycle(ctx context.Context, e lifecycle.Event) (lifecy
 		}, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return lifecycle.Receipt{}, err
+	}
+
+	// The authorization row lock serializes competing lifecycle admissions.
+	// A missing-parent seq3 adjustment may precede its seq2 clearing, but two
+	// different business events cannot occupy the same immutable sequence slot.
+	var occupied bool
+	if err = tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM lifecycle_receipts
+			WHERE transaction_id = $1 AND payload_json->>'lifecycle_seq' = $2
+		)
+	`, e.TransactionID, strconv.Itoa(e.LifecycleSeq)).Scan(&occupied); err != nil {
+		return lifecycle.Receipt{}, err
+	}
+	if occupied {
+		return lifecycle.Receipt{}, ErrLifecycleConflict
 	}
 
 	// 5. Insert into lifecycle_receipts.

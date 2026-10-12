@@ -202,3 +202,74 @@ func TestReceiveLifecycleDatabase(t *testing.T) {
 		t.Fatalf("expected ErrDeclinedLifecycle, got: %v", err)
 	}
 }
+
+func TestLifecycleConflictingSlotsAndDeferredParent(t *testing.T) {
+	for _, scenario := range []struct {
+		name      string
+		firstKind string
+		firstSeq  int
+		nextKind  string
+		nextSeq   int
+		conflict  bool
+	}{
+		{"pre_reverse_clear", "REVERSE", 2, "CLEAR", 2, true},
+		{"clear_pre_reverse", "CLEAR", 2, "REVERSE", 2, true},
+		{"post_reverse_chargeback", "REVERSE", 3, "CHARGEBACK", 3, true},
+		{"chargeback_post_reverse", "CHARGEBACK", 3, "REVERSE", 3, true},
+		{"deferred_chargeback_clear", "CHARGEBACK", 3, "CLEAR", 2, false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			s := database(t)
+			_, e := fixture(t, s)
+			ctx := context.Background()
+			now := time.Now().UnixMilli()
+			rows, err := s.Admit(ctx, []Input{{Event: e, Received: now}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := rows[0].Request
+			finals, err := s.Finalize(ctx, []Choice{{ID: e.TransactionID, Proposal: &auth.Proposal{Request: req, ProposalID: contract.ID(e.TransactionID, "prop"), Decision: "APPROVE", Reason: "OK", Flags: []string{}, Score: 10}}})
+			if err != nil || finals[0].Final == nil {
+				t.Fatal(err)
+			}
+			makeEvent := func(kind string, seq int) lifecycle.Event {
+				p := e.EventID
+				if seq == 3 {
+					p = contract.ID(e.TransactionID, "CLEAR", "2")
+				}
+				v, err := lifecycle.New(e.RunID, e.TransactionID, e.SourceSeq, seq, kind, p, now+int64(seq)*1000, now, e.AuthorizationDate, e.Currency, e.AmountMinor, e.MerchantID, e.IssuerBankID, e.AcquirerBankID, e.ReferenceVersion, req.Epoch, req.CloseDay)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return v
+			}
+			first := makeEvent(scenario.firstKind, scenario.firstSeq)
+			receipt, err := s.ReceiveLifecycle(ctx, first)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = s.ReceiveLifecycle(ctx, makeEvent(scenario.nextKind, scenario.nextSeq))
+			if scenario.conflict && !errors.Is(err, ErrLifecycleConflict) {
+				t.Fatalf("competing transition accepted: %v", err)
+			}
+			if !scenario.conflict && err != nil {
+				t.Fatalf("missing-parent chargeback must allow clearing: %v", err)
+			}
+			retry, err := s.ReceiveLifecycle(ctx, first)
+			if err != nil || retry != receipt {
+				t.Fatalf("retry changed: %+v %v", retry, err)
+			}
+			var count int
+			if err = s.DB.QueryRowContext(ctx, "SELECT count(*) FROM lifecycle_receipts WHERE transaction_id=$1", e.TransactionID).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			want := 1
+			if !scenario.conflict {
+				want = 2
+			}
+			if count != want {
+				t.Fatalf("receipts=%d want%d", count, want)
+			}
+		})
+	}
+}
