@@ -513,3 +513,29 @@ func TestExactReconciliationMergeBuffersFitCaps(t *testing.T) {
 		t.Fatal("peons need two merge buffers for exact queries")
 	}
 }
+
+func TestSupersetDockerfileInstallsInVenv(t *testing.T) {
+	path := "deploy/superset.Dockerfile"
+	if _, err := os.Stat(path); err != nil {
+		path = "../deploy/superset.Dockerfile"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if strings.Contains(content, "/usr/local/lib/python3.10/site-packages") {
+		t.Error("superset.Dockerfile must not reference system python site-packages in PYTHONPATH")
+	}
+	if strings.Contains(content, "ENV PYTHONPATH=") {
+		t.Error("superset.Dockerfile must drop PYTHONPATH override")
+	}
+	if !strings.Contains(content, "/app/.venv") {
+		t.Error("superset.Dockerfile must install drivers into /app/.venv")
+	}
+	for _, pkg := range []string{"pydruid==0.6.9", "psycopg2-binary==2.9.10"} {
+		if !strings.Contains(content, pkg) {
+			t.Errorf("superset.Dockerfile missing pinned driver %s", pkg)
+		}
+	}
+}
