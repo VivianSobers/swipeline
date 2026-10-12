@@ -21,17 +21,33 @@ jobs:
           docker run --rm golang:1.27.2 go version
       - name: Check source and contracts
         run: make check build
-      - name: Run batch python tests
-        run: make batch-test
       - name: Check deployment configuration
         run: make deploy-check
       - name: Check full profile configuration
         # No full stack in CI due to runner capacity; full profile runs on the reference server.
-        run: |
-          COMPOSE_PROFILES=full make deploy-check
-          make superset-check
+        run: COMPOSE_PROFILES=full make deploy-check
       - name: Prove installed preview
         run: make demo
+  superset:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check superset image and dependencies
+        run: make superset-check
+  batch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check spark image
+        run: make spark-check
+      - name: Run batch python tests
+        run: make batch-test
   storage:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
