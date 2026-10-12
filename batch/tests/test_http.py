@@ -81,3 +81,63 @@ class HTTPTests(unittest.TestCase):
             urlopen(Request(self.url + '/batch', method='POST'))
         self.assertEqual(caught.exception.code, 503)
         caught.exception.close()
+
+    def test_inspect_releases_lock_before_reply(self):
+        delivered = threading.Event()
+        released = False
+        closed = False
+
+        def blocking_release(key):
+            nonlocal released
+            delivered.wait(timeout=0.2)
+            released = True
+
+        def tracking_close():
+            nonlocal closed
+            closed = True
+
+        self.coordinator.release_advisory_lock.side_effect = blocking_release
+        self.coordinator.close.side_effect = tracking_close
+
+        with patch('batch.http.inspect_transaction', return_value={'transaction_id': 'tx', 'transaction': {'status': 'CLEARED'}, 'events': [], 'postings': []}):
+            try:
+                with urlopen(self.url + '/inspect?transaction_id=tx') as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertTrue(released, 'lock must be released before response is received')
+                    self.assertTrue(closed, 'coordinator must be closed before response is received')
+            finally:
+                delivered.set()
+        self.coordinator.acquire_advisory_lock.assert_called_once_with(BATCH_WRITER_LOCK_KEY)
+        self.coordinator.release_advisory_lock.assert_called_once_with(BATCH_WRITER_LOCK_KEY)
+        self.coordinator.close.assert_called_once()
+
+    def test_batch_releases_lock_before_reply(self):
+        from urllib.request import Request
+        delivered = threading.Event()
+        released = False
+        closed = False
+
+        def blocking_release(key):
+            nonlocal released
+            delivered.wait(timeout=0.2)
+            released = True
+
+        def tracking_close():
+            nonlocal closed
+            closed = True
+
+        self.coordinator.release_advisory_lock.side_effect = blocking_release
+        self.coordinator.close.side_effect = tracking_close
+
+        with patch('batch.worker.run_batch', return_value=True):
+            try:
+                with urlopen(Request(self.url + '/batch', method='POST')) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertTrue(released, 'lock must be released before response is received')
+                    self.assertTrue(closed, 'coordinator must be closed before response is received')
+            finally:
+                delivered.set()
+        self.coordinator.acquire_advisory_lock.assert_called_once_with(BATCH_WRITER_LOCK_KEY)
+        self.coordinator.release_advisory_lock.assert_called_once_with(BATCH_WRITER_LOCK_KEY)
+        self.coordinator.close.assert_called_once()
+

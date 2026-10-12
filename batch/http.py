@@ -29,25 +29,28 @@ def create_server(spark, coordinator_factory, address=('0.0.0.0', 8080)):
                 return
             coordinator = coordinator_factory()
             locked = False
+            response = None
             try:
                 locked = coordinator.acquire_advisory_lock(BATCH_WRITER_LOCK_KEY)
                 if not locked:
-                    self.reply(503, {'error': 'batch writer busy'})
-                    return
-                from batch.worker import run_batch
-                # run_batch's session lock is reentrant; its release retains
-                # this outer acquisition until the HTTP operation finishes.
-                changed = run_batch(spark, coordinator)
-                self.reply(200, {'processed': changed})
+                    response = (503, {'error': 'batch writer busy'})
+                else:
+                    from batch.worker import run_batch
+                    # run_batch's session lock is reentrant; its release retains
+                    # this outer acquisition until the HTTP operation finishes.
+                    changed = run_batch(spark, coordinator)
+                    response = (200, {'processed': changed})
             except Exception:
                 logger.exception('Batch request failed')
-                self.reply(500, {'error': 'batch failed'})
+                response = (500, {'error': 'batch failed'})
             finally:
                 try:
                     if locked:
                         coordinator.release_advisory_lock(BATCH_WRITER_LOCK_KEY)
                 finally:
                     coordinator.close()
+            if response is not None:
+                self.reply(*response)
 
         def do_GET(self):
             url = urlsplit(self.path)
@@ -62,26 +65,29 @@ def create_server(spark, coordinator_factory, address=('0.0.0.0', 8080)):
             # the writer's connection and would not exclude another HTTP thread.
             coordinator = coordinator_factory()
             locked = False
+            response = None
             try:
                 if url.path == '/health':
                     coordinator._get_connection()
-                    self.reply(200, {'status': 'ready'})
-                    return
-                locked = coordinator.acquire_advisory_lock(BATCH_WRITER_LOCK_KEY)
-                if not locked or coordinator.get_pending_batch():
-                    self.reply(503, {'error': 'batch publication in progress'})
-                    return
-                result = inspect_transaction(spark, values[0])
-                self.reply(200, format_inspection_result(result))
+                    response = (200, {'status': 'ready'})
+                else:
+                    locked = coordinator.acquire_advisory_lock(BATCH_WRITER_LOCK_KEY)
+                    if not locked or coordinator.get_pending_batch():
+                        response = (503, {'error': 'batch publication in progress'})
+                    else:
+                        result = inspect_transaction(spark, values[0])
+                        response = (200, format_inspection_result(result))
             except Exception:
                 logger.exception('Inspection request failed')
-                self.reply(503 if url.path == '/health' else 500, {'error': 'inspection unavailable'})
+                response = (503 if url.path == '/health' else 500, {'error': 'inspection unavailable'})
             finally:
                 try:
                     if locked:
                         coordinator.release_advisory_lock(BATCH_WRITER_LOCK_KEY)
                 finally:
                     coordinator.close()
+            if response is not None:
+                self.reply(*response)
 
     server = ThreadingHTTPServer(address, Handler)
     server.spark = spark
