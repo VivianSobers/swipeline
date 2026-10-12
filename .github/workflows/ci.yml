@@ -19,6 +19,8 @@ jobs:
           docker run --rm golang:1.27.2 go version
       - name: Check source and contracts
         run: make check build
+      - name: Run batch python tests
+        run: make batch-test
       - name: Check deployment configuration
         run: make deploy-check
       - name: Check full profile configuration

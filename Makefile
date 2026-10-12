@@ -68,6 +68,10 @@ m4-seaweedfs-smoke:
 spark-check:
 	docker build -f deploy/spark.Dockerfile -t swipeline-spark:m4 .
 	docker run --rm swipeline-spark:m4 python -c "import pyspark, psycopg2; assert pyspark.__version__ == '4.1.3'; sc = pyspark.SparkContext('local[1]', 'check'); jvm = sc._jvm; jvm.org.apache.spark.sql.hudi.HoodieSparkSessionExtension(); sc.stop(); print(pyspark.__version__)"
+.PHONY: batch-test
+batch-test:
+	@docker image inspect swipeline-spark:m4 >/dev/null 2>&1 || docker build -f deploy/spark.Dockerfile -t swipeline-spark:m4 .
+	docker run --rm -e POSTGRES_DSN=postgres://localhost:5432/gateway -v "$(CURDIR):/app:ro,z" -w /app swipeline-spark:m4 python -m unittest discover -s batch/tests -t .
 .PHONY: m4-storage
 m4-storage:
 	docker compose up -d --wait postgres kafka seaweedfs

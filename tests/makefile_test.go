@@ -84,3 +84,42 @@ func TestM4DemoMakefileTargets(t *testing.T) {
 		}
 	}
 }
+
+func TestBatchTestMakefileTarget(t *testing.T) {
+	data, err := os.ReadFile("../Makefile")
+	if err != nil {
+		data, err = os.ReadFile("Makefile")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	content := string(data)
+	if !strings.Contains(content, ".PHONY: batch-test") || !strings.Contains(content, "batch-test:") {
+		t.Fatal("Makefile missing batch-test target")
+	}
+	idx := strings.Index(content, "batch-test:")
+	block := content[idx:]
+	if next := strings.Index(block[1:], "\n.PHONY:"); next != -1 {
+		block = block[:next+1]
+	}
+	for _, want := range []string{
+		"swipeline-spark:m4",
+		"python -m unittest discover -s batch/tests -t .",
+		":ro,z",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("batch-test missing %q", want)
+		}
+	}
+
+	ciData, err := os.ReadFile("../.github/workflows/ci.yml")
+	if err != nil {
+		ciData, err = os.ReadFile(".github/workflows/ci.yml")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !strings.Contains(string(ciData), "make batch-test") {
+		t.Error("CI check job missing make batch-test")
+	}
+}
