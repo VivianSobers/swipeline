@@ -123,3 +123,62 @@ func TestBatchTestMakefileTarget(t *testing.T) {
 		t.Error("CI check job missing make batch-test")
 	}
 }
+
+func TestWorkflowLintMakefileTarget(t *testing.T) {
+	data, err := os.ReadFile("../Makefile")
+	if err != nil {
+		data, err = os.ReadFile("Makefile")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	content := string(data)
+	if !strings.Contains(content, ".PHONY:") || !strings.Contains(content, "workflow-lint") {
+		t.Fatal("Makefile missing workflow-lint target in .PHONY")
+	}
+	idx := strings.Index(content, "workflow-lint:")
+	if idx == -1 {
+		t.Fatal("Makefile missing workflow-lint target")
+	}
+	block := content[idx:]
+	if next := strings.Index(block[1:], "\n.PHONY:"); next != -1 {
+		block = block[:next+1]
+	}
+
+	// Actionlint image must be pinned to an exact version tag, never latest
+	imageRe := regexp.MustCompile(`rhysd/actionlint:([a-zA-Z0-9._-]+)`)
+	matches := imageRe.FindStringSubmatch(content)
+	if len(matches) < 2 {
+		t.Fatal("Makefile missing rhysd/actionlint image tag")
+	}
+	tag := matches[1]
+	if tag == "latest" {
+		t.Errorf("actionlint image must be pinned to an exact release version tag, got latest")
+	}
+
+	// Must bind-mount repository read-only with :z
+	for _, want := range []string{
+		":ro,z",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("workflow-lint target missing %q", want)
+		}
+	}
+
+	ciData, err := os.ReadFile("../.github/workflows/ci.yml")
+	if err != nil {
+		ciData, err = os.ReadFile(".github/workflows/ci.yml")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	ciContent := string(ciData)
+	if !strings.Contains(ciContent, "make workflow-lint") {
+		t.Error("CI workflow missing make workflow-lint step")
+	}
+	lintIdx := strings.Index(ciContent, "make workflow-lint")
+	checkIdx := strings.Index(ciContent, "make check")
+	if lintIdx == -1 || checkIdx == -1 || lintIdx > checkIdx {
+		t.Error("make workflow-lint must appear before make check in CI check job")
+	}
+}

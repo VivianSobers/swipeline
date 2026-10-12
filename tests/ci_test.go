@@ -131,12 +131,17 @@ func TestCIWorkflowPins(t *testing.T) {
 			t.Error("check job missing explicit timeout-minutes")
 		}
 
-		// Check job runs fast checks: make check, make build, deploy-check (both profiles), demo
+		// Check job runs fast checks: make workflow-lint, make check, make build, deploy-check (both profiles), demo
 		checkSteps := strings.Join(checkJob.steps, "\n")
-		for _, req := range []string{"make check", "build", "make deploy-check", "COMPOSE_PROFILES=full make deploy-check", "make demo"} {
+		for _, req := range []string{"make workflow-lint", "make check", "build", "make deploy-check", "COMPOSE_PROFILES=full make deploy-check", "make demo"} {
 			if !strings.Contains(checkSteps, req) {
 				t.Errorf("check job missing step %q", req)
 			}
+		}
+		lintIdx := strings.Index(checkSteps, "make workflow-lint")
+		checkIdx := strings.Index(checkSteps, "make check")
+		if lintIdx == -1 || checkIdx == -1 || lintIdx > checkIdx {
+			t.Errorf("make workflow-lint must run before make check in check job")
 		}
 		for _, forbidden := range []string{"superset-check", "batch-test"} {
 			if strings.Contains(checkSteps, forbidden) {

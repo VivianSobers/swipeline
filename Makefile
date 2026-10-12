@@ -1,6 +1,10 @@
 GO_IMAGE := golang:1.27.2
 GO_RUN = docker run --rm --user "$$(id -u):$$(id -g)" -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false -v "$(CURDIR):/src:ro,z" -w /src $(GO_IMAGE)
-.PHONY: check test fmt build
+ACTIONLINT_IMAGE := rhysd/actionlint:1.7.7
+.PHONY: check test fmt build workflow-lint
+workflow-lint:
+	docker run --rm -v "$(CURDIR):/repo:ro,z" -w /repo $(ACTIONLINT_IMAGE) $(wildcard .github/workflows/*.yml)
+
 check:
 	$(GO_RUN) sh -ec 'test -z "$$(gofmt -l cmd internal schemas tests 2>/dev/null)"; go vet ./...; go test -race ./...'
 test:

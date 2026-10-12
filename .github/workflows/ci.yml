@@ -3,7 +3,9 @@ on:
   push:
   pull_request:
   workflow_dispatch:
-concurrency: {group: ${{ github.workflow }}-${{ github.ref }}, cancel-in-progress: true}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -19,6 +21,8 @@ jobs:
           docker version
           docker compose version
           docker run --rm golang:1.27.2 go version
+      - name: Lint workflow files
+        run: make workflow-lint
       - name: Check source and contracts
         run: make check build
       - name: Check deployment configuration
