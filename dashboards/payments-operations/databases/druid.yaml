@@ -1,6 +1,5 @@
 database_name: druid
 sqlalchemy_uri: druid://druid-broker:8082/druid/v2/sql/
-tables: []
 uuid: e4b3c2a1-0000-4000-8000-000000000001
 version: 1.0.0
 extra:

@@ -48,6 +48,7 @@ superset-check:
 	docker build -f deploy/superset.Dockerfile -t swipeline-superset:m3 .
 	docker run --rm swipeline-superset:m3 python -c "import importlib.metadata, pydruid, psycopg2; print(importlib.metadata.version('pydruid'))"
 	docker run --rm swipeline-superset:m3 python /app/test_config.py
+	docker run --rm --memory=1024m swipeline-superset:m3 python /app/test_bundle.py
 .PHONY: superset-password
 superset-password:
 	docker compose exec -T superset cat /secrets/admin-password
