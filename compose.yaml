@@ -350,7 +350,7 @@ services:
       DRUID_XMX: 256m
       DRUID_XMS: 256m
       DRUID_MAXDIRECTMEMORYSIZE: 160m
-      druid_processing_buffer_sizeBytes: "50000000"
+      druid_processing_buffer_sizeBytes: "40000000"
     depends_on:
       druid-zk:
         condition: service_healthy
@@ -412,6 +412,7 @@ services:
       druid_worker_capacity: "2"
       druid_indexer_runner_javaOptsArray: '["-server","-Xms256m","-Xmx256m","-XX:MaxDirectMemorySize=256m"]'
       druid_indexer_fork_property_druid_processing_buffer_sizeBytes: "25000000"
+      druid_indexer_fork_property_druid_processing_numMergeBuffers: "2"
     volumes:
       - druid-shared:/opt/shared
     depends_on:

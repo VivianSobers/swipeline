@@ -491,3 +491,25 @@ func TestRenderedHistoricalCacheCopiesOwnedParent(t *testing.T) {
 	}
 	t.Fatal("historical cache volume missing")
 }
+
+func TestExactReconciliationMergeBuffersFitCaps(t *testing.T) {
+	env, err := os.ReadFile("../deploy/druid.env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), "druid_processing_numMergeBuffers=2") {
+		t.Fatal("exact nested reconciliation needs two merge buffers")
+	}
+	data, err := os.ReadFile("../compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	broker := s[strings.Index(s, "  druid-broker:"):strings.Index(s, "  druid-historical:")]
+	if !strings.Contains(broker, `druid_processing_buffer_sizeBytes: "40000000"`) || !strings.Contains(broker, "DRUID_MAXDIRECTMEMORYSIZE: 160m") {
+		t.Fatal("four broker buffers must fit existing160MiB cap")
+	}
+	if !strings.Contains(s, `druid_indexer_fork_property_druid_processing_numMergeBuffers: "2"`) {
+		t.Fatal("peons need two merge buffers for exact queries")
+	}
+}
