@@ -178,18 +178,29 @@ func (s *Store) Admit(ctx context.Context, in []Input) ([]Row, error) {
 	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(72002)"); err != nil {
 		return nil, err
 	}
-	// Each admission adds a request outbox row now and reserves one final.
-	var full bool
-	if err = tx.QueryRowContext(ctx, pressureSQL, s.MaxRows-2*int64(len(in)), s.MaxBytes-2*reserve*int64(len(in))).Scan(&full); err != nil {
-		return nil, err
-	}
-	if full {
-		return nil, ErrFull
-	}
-	// Lock existing rows in ID order, the same order Finalize uses.
-	for _, id := range ids {
-		if _, err = tx.ExecContext(ctx, "SELECT 1 FROM authorizations WHERE transaction_id=$1 FOR UPDATE", id); err != nil {
+	// Lock existing rows in ID order, the same order Finalize uses. Only
+	// unique new transactions reserve space; retries add no outbox rows and
+	// must still return stored outcomes when new admissions are stopped.
+	var newCount int64
+	for i, id := range ids {
+		if i > 0 && id == ids[i-1] {
+			continue
+		}
+		var exists int
+		err := tx.QueryRowContext(ctx, "SELECT 1 FROM authorizations WHERE transaction_id=$1 FOR UPDATE", id).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			newCount++
+		} else if err != nil {
 			return nil, err
+		}
+	}
+	if newCount > 0 {
+		var full bool
+		if err = tx.QueryRowContext(ctx, pressureSQL, s.MaxRows-2*newCount, s.MaxBytes-2*reserve*newCount).Scan(&full); err != nil {
+			return nil, err
+		}
+		if full {
+			return nil, ErrFull
 		}
 	}
 	out := make([]Row, len(in))

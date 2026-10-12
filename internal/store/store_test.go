@@ -372,3 +372,28 @@ func TestBacklogReportsUnsentAge(t *testing.T) {
 		t.Fatalf("%+v", b)
 	}
 }
+
+func TestRetryRemainsAvailableUnderOutboxPressure(t *testing.T) {
+	s := database(t)
+	_, event := fixture(t, s)
+	ctx := context.Background()
+	original := admitAt(t, s, event, time.Now().Add(-time.Second))
+	final := finalize(t, s, Choice{ID: event.TransactionID})
+	s.MaxRows, s.MaxBytes = 0, 0
+	rows, err := s.Admit(ctx, []Input{{Event: event, Received: time.Now().UnixMilli()}})
+	if err != nil {
+		t.Fatalf("retry of stored final rejected by backlog: %v", err)
+	}
+	if rows[0].Request != original || rows[0].Final.DecisionID != final.Final.DecisionID {
+		t.Fatal("retry changed stored outcome")
+	}
+	changed := event.Business
+	changed.AmountMinor++
+	conflict, err := contract.New(changed, event.ProducedAtMS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Admit(ctx, []Input{{Event: conflict, Received: time.Now().UnixMilli()}}); err == nil || errors.Is(err, ErrFull) {
+		t.Fatalf("retry must still check payload conflict: %v", err)
+	}
+}
