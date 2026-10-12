@@ -76,6 +76,7 @@ func TestInstalledAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	finals := installedFinals(t, c, cfg)
+	t.Logf("stand-in ordinals: %s", standInOrdinalRanges(finals))
 	assertInstalledDecisions(t, summary, finals)
 	if _, err = authorize.Run(ctx, cfg, c, "latency", 128); err != nil {
 		t.Fatal(err)
@@ -269,4 +270,52 @@ func TestInstalledDecisionsBurstThreshold(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStandInOrdinalRanges(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		ordinals []int
+		want     string
+	}{
+		{"empty", nil, "none (0)"},
+		{"single", []int{4}, "4 (1)"},
+		{"adjacent", []int{0, 1, 2}, "0-2 (3)"},
+		{"separate", []int{0, 1, 2, 5, 8, 9}, "0-2,5,8-9 (6)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			finals := make([]auth.Final, 12)
+			for _, ordinal := range tc.ordinals {
+				finals[ordinal].Source = "STAND_IN"
+			}
+			if got := standInOrdinalRanges(finals); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// standInOrdinalRanges preserves the replay order represented by finals.
+func standInOrdinalRanges(finals []auth.Final) string {
+	var ranges []string
+	count := 0
+	for i := 0; i < len(finals); i++ {
+		if finals[i].Source != "STAND_IN" {
+			continue
+		}
+		start := i
+		for i+1 < len(finals) && finals[i+1].Source == "STAND_IN" {
+			i++
+		}
+		count += i - start + 1
+		if start == i {
+			ranges = append(ranges, fmt.Sprint(start))
+		} else {
+			ranges = append(ranges, fmt.Sprintf("%d-%d", start, i))
+		}
+	}
+	if count == 0 {
+		return "none (0)"
+	}
+	return fmt.Sprintf("%s (%d)", strings.Join(ranges, ","), count)
 }
