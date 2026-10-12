@@ -121,6 +121,52 @@ func TestSparkExecutableDeployment(t *testing.T) {
 			t.Errorf("missing %s", want)
 		}
 	}
+	content := string(dockerfile)
+	if strings.Contains(content, "archive.apache.org") {
+		t.Errorf("spark.Dockerfile must not download from archive.apache.org")
+	}
+	wantPySpark := "pyspark==4.1.3"
+	wantPySparkHash := "b600238e771e45618a58beaf9d63cfd9aa06f61ce193244cedf890a04a4409f7"
+	if !strings.Contains(content, wantPySpark) || !strings.Contains(content, "--require-hashes") || !strings.Contains(content, wantPySparkHash) {
+		t.Errorf("spark.Dockerfile must install pinned %s with --require-hashes and hash %s", wantPySpark, wantPySparkHash)
+	}
+	if !strings.Contains(content, "SPARK_HOME=/usr/local/lib/python3.12/site-packages/pyspark") {
+		t.Errorf("spark.Dockerfile must set SPARK_HOME to pyspark package directory")
+	}
+	for _, flag := range []string{"--retry 5", "--retry-delay 5", "--connect-timeout 30"} {
+		if !strings.Contains(content, flag) {
+			t.Errorf("spark.Dockerfile curl missing fail fast/retry flag %q", flag)
+		}
+	}
+	jars := []struct {
+		name   string
+		sha1   string
+		sha256 string
+	}{
+		{"hudi-spark4.1-bundle_2.13-1.2.1.jar", "90d03303ca994bdae82f91136d8c149e8df26b68", ""},
+		{"hadoop-aws-3.4.2.jar", "16f9de6da5c7862241d55a13d34843404d0cbb88", ""},
+		{"bundle-2.29.52.jar", "b63eb928c2ac13bde07746bcfe7fb38bbdb4b5c5", ""},
+		{"spark-sql-kafka-0-10_2.13-4.1.3.jar", "fa6f5869ac9f8f183e1941e0a8faae6257fd1ca2", ""},
+		{"kafka-clients-3.9.1.jar", "", "7568b998572d256f0b7bc0afdc1b7a2588b8b08415c62ce314c864a6851ae9d9"},
+		{"spark-token-provider-kafka-0-10_2.13-4.1.3.jar", "3903171bdc843d9560916a91ada4ecf9d10db1e7", ""},
+		{"commons-pool2-2.12.1.jar", "e5c7b6c9f5a4b59be2bba213fbec70b413376fc1", ""},
+	}
+	for _, j := range jars {
+		if !strings.Contains(content, j.name) {
+			t.Errorf("spark.Dockerfile missing jar %s", j.name)
+			continue
+		}
+		hasCheck := false
+		if j.sha1 != "" && strings.Contains(content, j.sha1) && strings.Contains(content, "sha1sum") {
+			hasCheck = true
+		}
+		if j.sha256 != "" && strings.Contains(content, j.sha256) && strings.Contains(content, "sha256sum") {
+			hasCheck = true
+		}
+		if !hasCheck {
+			t.Errorf("spark.Dockerfile missing checksum verification for jar %s", j.name)
+		}
+	}
 	compose, err := os.ReadFile("../compose.yaml")
 	if err != nil {
 		t.Fatal(err)
