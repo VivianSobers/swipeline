@@ -147,7 +147,7 @@ func New(
 
 // Validate checks lifecycle event schema version, identifiers, values, and dates.
 func (e Event) Validate() error {
-	if e.SchemaVersion != 1 || e.SourceSeq < 0 || e.ProducedAtMS < 0 || e.AmountMinor <= 0 || e.Currency != "USD" || e.SealEpoch < 0 {
+	if e.SchemaVersion != 1 || e.SourceSeq < 0 || e.ProducedAtMS < 0 || e.EventTimeMS <= 0 || e.AmountMinor <= 0 || e.Currency != "USD" || e.SealEpoch < 0 {
 		return errors.New("invalid schema version, sequence, timestamp, seal epoch or money")
 	}
 	if e.LifecycleSeq != 2 && e.LifecycleSeq != 3 {

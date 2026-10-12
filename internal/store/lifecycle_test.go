@@ -294,6 +294,7 @@ func TestLifecycleInvalidEventsDoNotReserveSlots(t *testing.T) {
 		{"wrong_source_seq", "CLEAR", 2, false, "CLEAR", 2},
 		{"wrong_epoch", "CLEAR", 2, false, "CLEAR", 2},
 		{"wrong_close_day", "CLEAR", 2, false, "CLEAR", 2},
+		{"zero_event_time", "REVERSE", 2, false, "CLEAR", 2},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := database(t)
@@ -324,6 +325,8 @@ func TestLifecycleInvalidEventsDoNotReserveSlots(t *testing.T) {
 				invalid.ParentEventID = contract.ID("wrong-parent")
 			}
 			switch c.name {
+			case "zero_event_time":
+				invalid.EventTimeMS = 0
 			case "wrong_run":
 				invalid.RunID = "wrong-run"
 			case "wrong_merchant":
