@@ -13,13 +13,14 @@ with tempfile.TemporaryDirectory() as work:
     from superset import create_app, db
     app = create_app()
     with app.app_context():
-        db.create_all()
         from superset.commands.importers.v1.utils import get_contents_from_bundle, load_metadata, validate_metadata_type
         from superset.databases.schemas import ImportV1DatabaseSchema
         from superset.datasets.schemas import ImportV1DatasetSchema
         from superset.charts.schemas import ImportV1ChartSchema
         from superset.dashboards.schemas import ImportV1DashboardSchema
         import yaml
+        from flask_appbuilder import Model
+        Model.metadata.create_all(bind=db.engine)
         contents = get_contents_from_bundle(ZipFile(sys.argv[1] if len(sys.argv) > 1 else '/app/dashboards/payments-operations.zip'))
         errors = []
         metadata = load_metadata(contents)
