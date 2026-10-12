@@ -60,10 +60,10 @@ docker run --rm --memory=1024m --cpus=2 --user "$(id -u):$(id -g)" \
  go test -c -o /faults/analytics.test ./tests
 
 # Run 300-event warm-up
-docker compose -p "$project" exec -T replayer /swipeline replay --events 300 --run-id "warm-$(date +%s)" --tps 50
+docker compose -p "$project" exec -T replayer /swipeline replay --events 300 --run-id "warm-$(date +%s)" --tps 50 --deadline-mode throughput
 
 # Run 1000-event run
-docker compose -p "$project" exec -T replayer /swipeline replay --events 1000 --run-id installed-42 --tps 50
+docker compose -p "$project" exec -T replayer /swipeline replay --events 1000 --run-id installed-42 --tps 50 --deadline-mode throughput
 
 SUPERSET_PASSWORD=$(docker compose -p "$project" exec -T superset cat /secrets/admin-password 2>/dev/null || true)
 

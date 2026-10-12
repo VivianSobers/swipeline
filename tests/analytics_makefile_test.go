@@ -204,3 +204,15 @@ func TestM3CompilesBeforeTimedReplay(t *testing.T) {
 		t.Fatal("execute precompiled installed tests")
 	}
 }
+
+func TestM3RunsScoredDetectorWithThroughputDeadlines(t *testing.T) {
+	data, err := os.ReadFile("m3-demo.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, "exec -T replayer /swipeline replay") && !strings.Contains(line, "--deadline-mode throughput") {
+			t.Fatal("analytics replay needs explicit throughput scoring budget")
+		}
+	}
+}
