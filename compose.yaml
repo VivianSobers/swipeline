@@ -234,14 +234,20 @@ services:
     profiles: [core, full]
     image: chrislusf/seaweedfs:4.48
     mem_limit: 512m
-    command: ["mini", "-dir=/data", "-bucket=swipeline", "-s3.port=8333"]
+    command: ["mini", "-dir=/data", "-bucket=swipeline", "-s3.port=8333", "-s3.config=/etc/seaweed-s3.json"]
     ports:
       - "127.0.0.1:${SWIPELINE_SEAWEED_PORT:-8333}:8333"
     volumes:
       - seaweedfs-data:/data
+      - type: bind
+        source: ./deploy/seaweed-s3.json
+        target: /etc/seaweed-s3.json
+        read_only: true
+        bind:
+          selinux: z
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8333/"]
+      test: [CMD-SHELL, "curl -fsS --max-time 3 http://127.0.0.1:8333/healthz"]
       interval: 2s
       timeout: 3s
       retries: 30

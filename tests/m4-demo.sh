@@ -18,6 +18,7 @@ cleanup() {
 		COMPOSE_PROFILES=core docker compose -p "$project" logs --no-color seaweedfs || true
 	fi
 	COMPOSE_PROFILES=core docker compose -p "$project" down -v --remove-orphans
+	chmod -R u+w "$work/go-mod"
 	rm -rf "$work"
 	exit "$rc"
 }

@@ -175,3 +175,37 @@ func TestM2LatencyStartsOnlyRequiredServices(t *testing.T) {
 		}
 	}
 }
+
+func TestM4ModuleCacheCleanupRestoresDirectoryWrites(t *testing.T) {
+	data, err := os.ReadFile("m4-demo.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	restore := strings.Index(content, `chmod -R u+w "$work/go-mod"`)
+	remove := strings.Index(content, `rm -rf "$work"`)
+	if restore < 0 || remove < restore {
+		t.Fatal("read-only Go module cache must become writable before task cleanup")
+	}
+}
+
+func TestSeaweedSignedS3Bootstrap(t *testing.T) {
+	data, err := os.ReadFile("../compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"-s3.config=/etc/seaweed-s3.json", "source: ./deploy/seaweed-s3.json", "http://127.0.0.1:8333/healthz"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("missing signed S3 bootstrap: %s", want)
+		}
+	}
+	data, err = os.ReadFile("../deploy/seaweed-s3.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"accessKey": "any"`, `"secretKey": "any"`, `"Write"`, `"List"`} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("missing pinned S3A credentials/actions: %s", want)
+		}
+	}
+}

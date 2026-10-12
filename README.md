@@ -183,6 +183,8 @@ Swipeline tracks transactions through their entire lifecycle — from real-time 
 
 ### Architecture and Lifecycle Flows
 
+The local SeaweedFS mini server creates the `swipeline` bucket and loads `deploy/seaweed-s3.json` with local credentials `any` / `any`, matching Spark S3A.
+
 The lifecycle subsystem pairs an event-driven ledger journal with an ACID lakehouse powered by Apache Spark 4.1.3, Apache Hudi 1.2.1, and SeaweedFS (S3-compatible object storage).
 
 Four canonical transaction lifecycle flows are supported:

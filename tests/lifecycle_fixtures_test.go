@@ -20,6 +20,7 @@ import (
 	"github.com/VivianSobers/swipeline/internal/inspect"
 	"github.com/VivianSobers/swipeline/internal/lifecycle"
 	"github.com/VivianSobers/swipeline/internal/store"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 func lifecycleBatch(t *testing.T, ctx context.Context, endpoint string) {
@@ -81,6 +82,7 @@ func lifecycleFlush(t *testing.T, ctx context.Context, db *store.Store, endpoint
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+	lifecycleCanonicalBarrier(t, ctx, db)
 	lifecycleBatch(t, ctx, endpoint)
 	// An HTTP trigger may encounter the polling worker's lock. Wait for all
 	// accepted records to be in a completed manifest before returning.
@@ -104,7 +106,7 @@ func TestInstalledLifecyclePrepare(t *testing.T) {
 	if endpoint == "" {
 		t.Skip("run make m4-demo")
 	}
-	for _, key := range []string{"SWIPELINE_TEST_GATEWAY", "SWIPELINE_TEST_DB", "SWIPELINE_FIXTURES"} {
+	for _, key := range []string{"SWIPELINE_TEST_GATEWAY", "SWIPELINE_TEST_DB", "SWIPELINE_FIXTURES", "SWIPELINE_KAFKA"} {
 		if os.Getenv(key) == "" {
 			t.Fatalf("missing %s", key)
 		}
@@ -117,6 +119,11 @@ func TestInstalledLifecyclePrepare(t *testing.T) {
 	}
 	defer db.DB.Close()
 	client := installedClient(t)
+	// Warm the installed scoring job before the four fixed business requests.
+	// Cold-start stand-in declines remain durable and belong to a separate run.
+	if _, err := authorize.Run(ctx, installedConfig("m4-warm", 300, 50), client, "throughput", 4); err != nil {
+		t.Fatal(err)
+	}
 	run := "m4-deterministic"
 	day := "2026-10-08"
 	if err := client.Register(ctx, auth.Run{ID: run, Identity: contract.ID(run), Day: day, Rule: authorize.Rules, Reference: generator.Reference, Mode: "throughput", TPS: 1, Compression: 1, Concurrency: 1, Partitioner: "sha256-json-v1", Partitions: 4}); err != nil {
@@ -268,4 +275,64 @@ func TestInstalledLifecycleInspectionLock(t *testing.T) {
 	if response.StatusCode != 503 {
 		t.Fatalf("inspection bypassed independent writer lock: HTTP %d", response.StatusCode)
 	}
+}
+
+// Wait for actual committed canonical records, not just delivery into the raw
+// decision topic. Flink checkpoints may lag the SQL outbox's sent_at marker.
+func lifecycleCanonicalBarrier(t *testing.T, parent context.Context, db *store.Store) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
+	defer cancel()
+	rows, err := db.DB.QueryContext(ctx, `SELECT topic, payload->>'event_id' FROM outbox WHERE topic IN ('swipeline.decisions.raw.v1','swipeline.lifecycle.v1')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := map[string]bool{}
+	for rows.Next() {
+		var topic, id string
+		if err := rows.Scan(&topic, &id); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		if topic == "swipeline.decisions.raw.v1" {
+			topic = "swipeline.decisions.v1"
+		}
+		expected[topic+":"+id] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatal(err)
+	}
+	rows.Close()
+	partitions := map[string]map[int32]kgo.Offset{}
+	for _, topic := range []string{"swipeline.decisions.v1", "swipeline.lifecycle.v1"} {
+		partitions[topic] = map[int32]kgo.Offset{}
+		for p := int32(0); p < 4; p++ {
+			partitions[topic][p] = kgo.NewOffset().AtStart()
+		}
+	}
+	consumer, err := kgo.NewClient(kgo.SeedBrokers(os.Getenv("SWIPELINE_KAFKA")), kgo.ConsumePartitions(partitions), kgo.FetchIsolationLevel(kgo.ReadCommitted()), kgo.FetchMaxBytes(1<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer consumer.Close()
+	for len(expected) > 0 {
+		fetches := consumer.PollFetches(ctx)
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("canonical records missing: %d (%v)", len(expected), err)
+		}
+		for _, failure := range fetches.Errors() {
+			t.Fatalf("canonical Kafka fetch failed: %v", failure.Err)
+		}
+		fetches.EachRecord(func(record *kgo.Record) {
+			var envelope struct {
+				EventID string `json:"event_id"`
+			}
+			if err := json.Unmarshal(record.Value, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			delete(expected, record.Topic+":"+envelope.EventID)
+		})
+	}
+	t.Log("all admitted canonical records are read_committed before ingestion")
 }
