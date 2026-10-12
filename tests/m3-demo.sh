@@ -5,6 +5,7 @@ project=swipeline-m3-demo-$(date +%s)-$$
 export SWIPELINE_HTTP_PORT=0 SWIPELINE_PROM_PORT=0 SWIPELINE_GATEWAY_PORT=0 SWIPELINE_FLINK_PORT=0 SWIPELINE_DRUID_PORT=0 SWIPELINE_SUPERSET_PORT=0
 work=$(mktemp -d)
 worker=
+mkdir -p "$work/go-cache" "$work/go-mod"
 
 cleanup() {
 	rc=$?
@@ -19,6 +20,7 @@ cleanup() {
 		COMPOSE_PROFILES=full docker compose -p "$project" logs --no-color superset || true
 	fi
 	COMPOSE_PROFILES=full docker compose -p "$project" down -v --remove-orphans
+	chmod -R u+w "$work/go-mod"
 	rm -rf "$work"
 	exit "$rc"
 }
@@ -50,6 +52,13 @@ COMPOSE_PROFILES=full docker compose -p "$project" up -d --build --wait postgres
 ) &
 worker=$!
 
+# Compile before replay so toolchain setup cannot consume the freshness budget.
+docker run --rm --memory=1024m --cpus=2 --user "$(id -u):$(id -g)" \
+ -e GOCACHE=/tmp/go-cache -e GOMODCACHE=/tmp/go-mod -e GOFLAGS=-buildvcs=false \
+ -v "$work/go-cache:/tmp/go-cache:z" -v "$work/go-mod:/tmp/go-mod:z" \
+ -v "$PWD:/src:ro,z" -v "$work:/faults:z" -w /src golang:1.27.2 \
+ go test -c -o /faults/analytics.test ./tests
+
 # Run 300-event warm-up
 docker compose -p "$project" exec -T replayer /swipeline replay --events 300 --run-id "warm-$(date +%s)" --tps 50
 
@@ -73,5 +82,5 @@ docker run --rm --network "${project}_default" --user "$(id -u):$(id -g)" \
 	-e SWIPELINE_FAULT_DIR="/faults" \
 	-v "$PWD:/src:ro,z" -v "$work:/faults:z" -w /src golang:1.27.2 \
 	sh -ec '
-		go test ./tests -run '\''^TestInstalledAnalytics'\'' -count=1 -v
+		/faults/analytics.test -test.run '\''^TestInstalledAnalytics'\'' -test.count=1 -test.v
 	'

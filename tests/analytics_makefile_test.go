@@ -188,3 +188,19 @@ func TestM3DemoScript(t *testing.T) {
 		}
 	}
 }
+
+func TestM3CompilesBeforeTimedReplay(t *testing.T) {
+	data, err := os.ReadFile("m3-demo.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(data)
+	compile := strings.Index(script, "go test -c -o /faults/analytics.test ./tests")
+	replay := strings.Index(script, "# Run 1000-event run")
+	if compile < 0 || compile > replay {
+		t.Fatal("compile installed tests before freshness-sensitive replay")
+	}
+	if !strings.Contains(script, "/faults/analytics.test -test.run") {
+		t.Fatal("execute precompiled installed tests")
+	}
+}
