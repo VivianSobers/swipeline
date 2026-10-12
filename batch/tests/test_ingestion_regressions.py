@@ -3,6 +3,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import MagicMock, patch
 
+from batch.db import BATCH_WRITER_LOCK_KEY
 from batch.journal import parse_event_envelope
 from batch.reducer import TransactionReducer
 from batch.worker import process_postings, process_transactions, run_loop
@@ -264,7 +265,7 @@ class TestWorkerBoundaryRegression(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, 'failed read'):
                         run_batch(MagicMock(), coordinator, start_offsets={'t': {'0': 0}}, end_offsets={'t': {'0': 1}})
                 coordinator.complete_batch.assert_not_called()
-                coordinator.release_advisory_lock.assert_called_once_with(72002)
+                coordinator.release_advisory_lock.assert_called_once_with(BATCH_WRITER_LOCK_KEY)
 
     def test_competing_terminal_event_is_quarantined(self):
         auth, clear, cb = fixtures()
@@ -360,4 +361,4 @@ class PersistedPostingWorkerIntegrityTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'posting'):
                 run_batch(MagicMock(), coordinator, start_offsets={'topic': {'0': 0}}, end_offsets={'topic': {'0': 2}})
         coordinator.complete_batch.assert_not_called()
-        coordinator.release_advisory_lock.assert_called_once_with(72002)
+        coordinator.release_advisory_lock.assert_called_once_with(BATCH_WRITER_LOCK_KEY)

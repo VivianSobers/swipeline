@@ -4,6 +4,7 @@ import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+from batch.db import BATCH_WRITER_LOCK_KEY
 from batch.inspect import inspect_transaction, format_inspection_result
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ def create_server(spark, coordinator_factory, address=('0.0.0.0', 8080)):
             coordinator = coordinator_factory()
             locked = False
             try:
-                locked = coordinator.acquire_advisory_lock(72002)
+                locked = coordinator.acquire_advisory_lock(BATCH_WRITER_LOCK_KEY)
                 if not locked:
                     self.reply(503, {'error': 'batch writer busy'})
                     return
@@ -44,7 +45,7 @@ def create_server(spark, coordinator_factory, address=('0.0.0.0', 8080)):
             finally:
                 try:
                     if locked:
-                        coordinator.release_advisory_lock(72002)
+                        coordinator.release_advisory_lock(BATCH_WRITER_LOCK_KEY)
                 finally:
                     coordinator.close()
 
@@ -66,7 +67,7 @@ def create_server(spark, coordinator_factory, address=('0.0.0.0', 8080)):
                     coordinator._get_connection()
                     self.reply(200, {'status': 'ready'})
                     return
-                locked = coordinator.acquire_advisory_lock(72002)
+                locked = coordinator.acquire_advisory_lock(BATCH_WRITER_LOCK_KEY)
                 if not locked or coordinator.get_pending_batch():
                     self.reply(503, {'error': 'batch publication in progress'})
                     return
@@ -78,7 +79,7 @@ def create_server(spark, coordinator_factory, address=('0.0.0.0', 8080)):
             finally:
                 try:
                     if locked:
-                        coordinator.release_advisory_lock(72002)
+                        coordinator.release_advisory_lock(BATCH_WRITER_LOCK_KEY)
                 finally:
                     coordinator.close()
 

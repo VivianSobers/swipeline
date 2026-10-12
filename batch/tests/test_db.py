@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 import json
 
-from batch.db import BatchCoordinator
+from batch.db import BatchCoordinator, BATCH_WRITER_LOCK_KEY
 
 
 class TestBatchCoordinator(unittest.TestCase):
@@ -108,17 +108,17 @@ class TestBatchCoordinator(unittest.TestCase):
         self.mock_cursor.fetchone.side_effect = [(True,), (True,)]
         coordinator = BatchCoordinator(dsn="postgres://mock:5432/gateway")
         
-        locked = coordinator.acquire_advisory_lock(72002)
+        locked = coordinator.acquire_advisory_lock(BATCH_WRITER_LOCK_KEY)
         self.assertTrue(locked)
         query, params = self.mock_cursor.execute.call_args[0]
         self.assertIn("pg_try_advisory_lock", query)
-        self.assertEqual(params[0], 72002)
+        self.assertEqual(params[0], BATCH_WRITER_LOCK_KEY)
         
-        released = coordinator.release_advisory_lock(72002)
+        released = coordinator.release_advisory_lock(BATCH_WRITER_LOCK_KEY)
         self.assertTrue(released)
         query, params = self.mock_cursor.execute.call_args[0]
         self.assertIn("pg_advisory_unlock", query)
-        self.assertEqual(params[0], 72002)
+        self.assertEqual(params[0], BATCH_WRITER_LOCK_KEY)
 
     @patch("batch.db.psycopg2.connect")
     def test_advisory_lock_already_held(self, mock_connect):
@@ -126,8 +126,30 @@ class TestBatchCoordinator(unittest.TestCase):
         self.mock_cursor.fetchone.return_value = (False,)
         coordinator = BatchCoordinator(dsn="postgres://mock:5432/gateway")
         
-        locked = coordinator.acquire_advisory_lock(72002)
+        locked = coordinator.acquire_advisory_lock(BATCH_WRITER_LOCK_KEY)
         self.assertFalse(locked)
+
+    @patch("batch.db.psycopg2.connect")
+    def test_acquire_and_release_uses_new_constant(self, mock_connect):
+        from batch.db import BATCH_WRITER_LOCK_KEY
+        mock_connect.return_value = self.mock_conn
+        self.mock_cursor.fetchone.side_effect = [(True,), (True,)]
+        coordinator = BatchCoordinator(dsn="postgres://mock:5432/gateway")
+
+        self.assertNotEqual(BATCH_WRITER_LOCK_KEY, 72002)
+        self.assertEqual(BATCH_WRITER_LOCK_KEY, 72003)
+
+        locked = coordinator.acquire_advisory_lock()
+        self.assertTrue(locked)
+        query, params = self.mock_cursor.execute.call_args[0]
+        self.assertIn("pg_try_advisory_lock", query)
+        self.assertEqual(params[0], 72003)
+
+        released = coordinator.release_advisory_lock()
+        self.assertTrue(released)
+        query, params = self.mock_cursor.execute.call_args[0]
+        self.assertIn("pg_advisory_unlock", query)
+        self.assertEqual(params[0], 72003)
 
     @patch("batch.db.psycopg2.connect")
     def test_resume_pending_batch_offsets(self, mock_connect):

@@ -6,7 +6,7 @@ import signal
 import time
 import threading
 
-from batch.db import BatchCoordinator
+from batch.db import BatchCoordinator, BATCH_WRITER_LOCK_KEY
 
 try:
     from batch.hudi_tables import (
@@ -326,7 +326,7 @@ def run_batch(spark, coordinator: BatchCoordinator, brokers=None, topic=None,
     brokers = brokers or os.environ.get("KAFKA_BROKERS", "kafka:9092")
     topic = topic or os.environ.get("KAFKA_TOPIC", "swipeline.decisions.v1,swipeline.lifecycle.v1")
     close_day = close_day or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-    if not coordinator.acquire_advisory_lock(72002):
+    if not coordinator.acquire_advisory_lock(BATCH_WRITER_LOCK_KEY):
         return False
     try:
         pending = coordinator.get_pending_batch()
@@ -353,7 +353,7 @@ def run_batch(spark, coordinator: BatchCoordinator, brokers=None, topic=None,
         _finish_batch(spark, coordinator, batch_id, "STARTED", raw_df, close_day)
         return True
     finally:
-        coordinator.release_advisory_lock(72002)
+        coordinator.release_advisory_lock(BATCH_WRITER_LOCK_KEY)
 
 
 def resume_pending_batch(spark, coordinator: BatchCoordinator, batch_id: str,

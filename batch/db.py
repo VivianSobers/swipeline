@@ -7,6 +7,8 @@ try:
 except ImportError:
     psycopg2 = None
 
+BATCH_WRITER_LOCK_KEY = 72003
+
 
 class BatchCoordinator:
     """Coordinates batch ingestion progress and state transitions in PostgreSQL."""
@@ -138,7 +140,7 @@ class BatchCoordinator:
                 raise RuntimeError("No pending batch for posting assignments")
             return row[0] if isinstance(row[0], dict) else json.loads(row[0])
 
-    def acquire_advisory_lock(self, key: int = 72002) -> bool:
+    def acquire_advisory_lock(self, key: int = BATCH_WRITER_LOCK_KEY) -> bool:
         """Attempts to acquire PostgreSQL session advisory lock using pg_try_advisory_lock."""
         conn = self._get_connection()
         with conn.cursor() as cur:
@@ -146,7 +148,7 @@ class BatchCoordinator:
             row = cur.fetchone()
             return bool(row[0]) if row else False
 
-    def release_advisory_lock(self, key: int = 72002) -> bool:
+    def release_advisory_lock(self, key: int = BATCH_WRITER_LOCK_KEY) -> bool:
         """Releases PostgreSQL session advisory lock using pg_advisory_unlock."""
         conn = self._get_connection()
         with conn.cursor() as cur:

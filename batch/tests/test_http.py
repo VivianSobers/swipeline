@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from urllib.request import urlopen
 from urllib.error import HTTPError
 
+from batch.db import BATCH_WRITER_LOCK_KEY
 from batch.http import create_server
 
 
@@ -29,8 +30,8 @@ class HTTPTests(unittest.TestCase):
                 data = json.load(response)
             self.assertEqual(data['status'], 'CLEARED')
             query.assert_called_once_with(self.server.spark, "x' OR 1=1")
-        self.coordinator.acquire_advisory_lock.assert_called_once_with(72002)
-        self.coordinator.release_advisory_lock.assert_called_once_with(72002)
+        self.coordinator.acquire_advisory_lock.assert_called_once_with(BATCH_WRITER_LOCK_KEY)
+        self.coordinator.release_advisory_lock.assert_called_once_with(BATCH_WRITER_LOCK_KEY)
         self.coordinator.close.assert_called_once()
 
     def test_busy_pending_and_storage_failure_are_errors(self):

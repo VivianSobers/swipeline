@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+from batch.db import BATCH_WRITER_LOCK_KEY
 from batch.worker import run_batch
 
 
@@ -36,13 +37,13 @@ class TestWorkerPipeline(unittest.TestCase):
             )
 
             self.assertTrue(res)
-            coordinator.acquire_advisory_lock.assert_called_with(72002)
+            coordinator.acquire_advisory_lock.assert_called_with(BATCH_WRITER_LOCK_KEY)
             coordinator.start_batch.assert_called_with(start_offsets, end_offsets)
             coordinator.update_instant.assert_any_call("batch-test-123", "journal", "instant-j-1")
             coordinator.update_instant.assert_any_call("batch-test-123", "transaction", "instant-t-1")
             coordinator.update_instant.assert_any_call("batch-test-123", "posting", "instant-p-1")
             coordinator.complete_batch.assert_called_with("batch-test-123")
-            coordinator.release_advisory_lock.assert_called_with(72002)
+            coordinator.release_advisory_lock.assert_called_with(BATCH_WRITER_LOCK_KEY)
 
 
     def test_advance_offsets_only_on_completion(self):
@@ -107,7 +108,7 @@ class TestWorkerPipeline(unittest.TestCase):
             self.assertEqual(coordinator.get_latest_offsets(), start_offsets)
 
             # Lock must still be released
-            coordinator.release_advisory_lock.assert_called_with(72002)
+            coordinator.release_advisory_lock.assert_called_with(BATCH_WRITER_LOCK_KEY)
 
     def test_recover_after_transactions_committed(self):
         spark = MagicMock()

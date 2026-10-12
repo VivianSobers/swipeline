@@ -263,10 +263,10 @@ func TestInstalledLifecycleInspectionLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock(72002)"); err != nil {
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock(72003)"); err != nil {
 		t.Fatal(err)
 	}
-	defer conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock(72002)")
+	defer conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock(72003)")
 	response, err := (&http.Client{Timeout: 5 * time.Second}).Get(endpoint + "/inspect?transaction_id=" + os.Getenv("SWIPELINE_TEST_TX_ID"))
 	if err != nil {
 		t.Fatal(err)
