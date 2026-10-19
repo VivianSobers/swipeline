@@ -1,6 +1,6 @@
 # swipeline
 
-swipeline is the data platform of a card payment network that you run on one machine. It generates repeatable synthetic card traffic, returns durable approve/decline decisions, and exposes replay and authorization metrics in Prometheus. A transaction ledger, settlement and analytics dashboards are planned for later milestones.
+swipeline, is the data platform of a card payment network that you run on one machine. It generates repeatable synthetic card traffic, returns durable approve/decline decisions, and exposes replay and authorization metrics in Prometheus. A transaction ledger, settlement and analytics dashboards are planned for later milestones.
 
 The gateway stores admissions and final decisions in PostgreSQL. Flink scores requests through Kafka. If scoring misses its deadline, the gateway stores a fail-closed stand-in decline. A late proposal cannot change that outcome. File previews remain available with `--preview`.
 
