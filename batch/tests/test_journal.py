@@ -87,7 +87,7 @@ class TestJournalEnvelope(unittest.TestCase):
             # Read back and verify count and fields
             journal_df = spark.read.format("hudi").load(table_path)
             self.assertEqual(journal_df.count(), 3)
-            
+
             row = journal_df.filter("event_id = 'evt-1'").collect()[0]
             self.assertEqual(row["event_revision"], 1)
             self.assertEqual(row["batch_id"], "batch-001")

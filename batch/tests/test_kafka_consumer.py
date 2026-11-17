@@ -38,7 +38,7 @@ class TestKafkaConsumer(unittest.TestCase):
         self.assertEqual(option_calls.get("subscribe"), topic)
         self.assertEqual(option_calls.get("failOnDataLoss"), "true")
         self.assertEqual(option_calls.get("kafka.isolation.level"), "read_committed")
-        
+
         self.assertEqual(json.loads(option_calls.get("startingOffsets")), start_offsets)
         self.assertEqual(json.loads(option_calls.get("endingOffsets")), end_offsets)
 

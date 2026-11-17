@@ -24,14 +24,14 @@ class TestBatchCoordinator(unittest.TestCase):
     def test_start_batch(self, mock_connect):
         mock_connect.return_value = self.mock_conn
         coordinator = BatchCoordinator(dsn="postgres://mock:5432/gateway")
-        
+
         starting_offsets = {"swipeline.lifecycle.v1": {"0": 100, "1": 150}}
         ending_offsets = {"swipeline.lifecycle.v1": {"0": 200, "1": 250}}
-        
+
         batch_id = coordinator.start_batch(starting_offsets, ending_offsets)
         self.assertIsNotNone(batch_id)
         self.assertTrue(len(batch_id) > 0)
-        
+
         self.mock_cursor.execute.assert_called_once()
         query, params = self.mock_cursor.execute.call_args[0]
         self.assertIn("INSERT INTO ingest_batches", query)
@@ -44,10 +44,10 @@ class TestBatchCoordinator(unittest.TestCase):
     def test_update_instant(self, mock_connect):
         mock_connect.return_value = self.mock_conn
         coordinator = BatchCoordinator(dsn="postgres://mock:5432/gateway")
-        
+
         batch_id = "test-batch-001"
         coordinator.update_instant(batch_id, "JOURNAL_COMMITTED", "20261011120000")
-        
+
         query, params = self.mock_cursor.execute.call_args[0]
         self.assertIn("UPDATE ingest_batches", query)
         self.assertIn("journal_instant", query)
@@ -73,10 +73,10 @@ class TestBatchCoordinator(unittest.TestCase):
     def test_complete_batch(self, mock_connect):
         mock_connect.return_value = self.mock_conn
         coordinator = BatchCoordinator(dsn="postgres://mock:5432/gateway")
-        
+
         batch_id = "test-batch-001"
         coordinator.complete_batch(batch_id)
-        
+
         query, params = self.mock_cursor.execute.call_args[0]
         self.assertIn("UPDATE ingest_batches", query)
         self.assertIn("COMPLETE", query)
@@ -87,7 +87,7 @@ class TestBatchCoordinator(unittest.TestCase):
         mock_connect.return_value = self.mock_conn
         self.mock_cursor.fetchone.return_value = None
         coordinator = BatchCoordinator(dsn="postgres://mock:5432/gateway")
-        
+
         offsets = coordinator.get_latest_offsets()
         self.assertEqual(offsets, {})
 
@@ -98,7 +98,7 @@ class TestBatchCoordinator(unittest.TestCase):
         ending = {"swipeline.lifecycle.v1": {"0": 200}}
         self.mock_cursor.fetchone.return_value = (json.dumps(starting), json.dumps(ending), "COMPLETE")
         coordinator = BatchCoordinator(dsn="postgres://mock:5432/gateway")
-        
+
         offsets = coordinator.get_latest_offsets()
         self.assertEqual(offsets, ending)
 
@@ -107,13 +107,13 @@ class TestBatchCoordinator(unittest.TestCase):
         mock_connect.return_value = self.mock_conn
         self.mock_cursor.fetchone.side_effect = [(True,), (True,)]
         coordinator = BatchCoordinator(dsn="postgres://mock:5432/gateway")
-        
+
         locked = coordinator.acquire_advisory_lock(BATCH_WRITER_LOCK_KEY)
         self.assertTrue(locked)
         query, params = self.mock_cursor.execute.call_args[0]
         self.assertIn("pg_try_advisory_lock", query)
         self.assertEqual(params[0], BATCH_WRITER_LOCK_KEY)
-        
+
         released = coordinator.release_advisory_lock(BATCH_WRITER_LOCK_KEY)
         self.assertTrue(released)
         query, params = self.mock_cursor.execute.call_args[0]
@@ -125,7 +125,7 @@ class TestBatchCoordinator(unittest.TestCase):
         mock_connect.return_value = self.mock_conn
         self.mock_cursor.fetchone.return_value = (False,)
         coordinator = BatchCoordinator(dsn="postgres://mock:5432/gateway")
-        
+
         locked = coordinator.acquire_advisory_lock(BATCH_WRITER_LOCK_KEY)
         self.assertFalse(locked)
 
@@ -162,7 +162,7 @@ class TestBatchCoordinator(unittest.TestCase):
             "TRANSACTIONS_COMMITTED",
         )
         coordinator = BatchCoordinator(dsn="postgres://mock:5432/gateway")
-        
+
         offsets = coordinator.get_latest_offsets()
         # The query selects completed batches only, so pending batches are excluded.
         self.assertIn("WHERE state = 'COMPLETE'", self.mock_cursor.execute.call_args[0][0])

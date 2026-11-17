@@ -7,7 +7,7 @@ class TestPostingsFee(unittest.TestCase):
     def test_fee_calculation_boundaries(self):
         # 100 cents * 1.5% = 1.5 cents -> rounds to 2 cents
         self.assertEqual(calculate_interchange_fee(100), 2)
-        
+
         # 10,000 cents * 1.5% = 150.0 cents -> 150 cents
         self.assertEqual(calculate_interchange_fee(10000), 150)
 

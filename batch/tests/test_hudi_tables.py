@@ -46,7 +46,7 @@ class TestHudiTableSchemas(unittest.TestCase):
     def test_schema_transactions(self):
         self.assertIsInstance(SCHEMA_TRANSACTIONS, StructType)
         field_names = {f.name: f.dataType for f in SCHEMA_TRANSACTIONS.fields}
-        
+
         required = [
             ("transaction_id", StringType),
             ("run_id", StringType),
@@ -78,7 +78,7 @@ class TestHudiTableSchemas(unittest.TestCase):
     def test_schema_ledger_events(self):
         self.assertIsInstance(SCHEMA_LEDGER_EVENTS, StructType)
         field_names = {f.name: f.dataType for f in SCHEMA_LEDGER_EVENTS.fields}
-        
+
         required = [
             ("event_id", StringType),
             ("event_revision", LongType),
@@ -101,7 +101,7 @@ class TestHudiTableSchemas(unittest.TestCase):
     def test_schema_settlement_postings(self):
         self.assertIsInstance(SCHEMA_SETTLEMENT_POSTINGS, StructType)
         field_names = {f.name: f.dataType for f in SCHEMA_SETTLEMENT_POSTINGS.fields}
-        
+
         required = [
             ("posting_id", StringType),
             ("posting_revision", LongType),

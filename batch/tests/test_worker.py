@@ -97,12 +97,12 @@ class TestWorkerPipeline(unittest.TestCase):
             # Assert journal and transaction checkpoints were updated
             coordinator.update_instant.assert_any_call("batch-fail-456", "journal", "instant-j-1")
             coordinator.update_instant.assert_any_call("batch-fail-456", "transaction", "instant-t-1")
-            
+
             # Assert posting was NEVER updated and batch was NEVER completed
             for call in coordinator.update_instant.call_args_list:
                 self.assertNotEqual(call[0][1], "posting")
             coordinator.complete_batch.assert_not_called()
-            
+
             # Assert state remains TRANSACTIONS_COMMITTED and offsets did NOT advance
             self.assertEqual(state_holder["state"], "TRANSACTIONS_COMMITTED")
             self.assertEqual(coordinator.get_latest_offsets(), start_offsets)
